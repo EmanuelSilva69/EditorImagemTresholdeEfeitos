@@ -1,6 +1,6 @@
 import os
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+from tkinter import colorchooser, filedialog, messagebox, ttk
 
 import cv2
 import numpy as np
@@ -26,6 +26,8 @@ from processamento_thresholds import (
     threshold_multi_otsu,
     threshold_range,
 )
+from filtros_cor import COR_PARA_HUE, memory_overflow_glitch, salvar_troca_cor
+from filtros_cor import detectar_hue_principal, shift_color
 
 
 class AppThresholdGUI:
@@ -36,11 +38,24 @@ class AppThresholdGUI:
 
         self.imagens: list[str] = []
         self.preview_images: list[ImageTk.PhotoImage] = []
+        self.preview_color_images: list[ImageTk.PhotoImage] = []
+        self.caminho_cor: str = ""
+        self.modo_preview_cor: str = "troca"
 
         self._build_ui()
 
     def _build_ui(self) -> None:
-        frame_top = ttk.Frame(self.root, padding=10)
+        self.tabs = ttk.Notebook(self.root)
+        self.tabs.pack(fill="both", expand=True)
+
+        self.tab_threshold = ttk.Frame(self.tabs)
+        self.tab_cor = ttk.Frame(self.tabs)
+        self.tab_video = ttk.Frame(self.tabs)
+        self.tabs.add(self.tab_threshold, text="Threshold")
+        self.tabs.add(self.tab_cor, text="Troca de Cor")
+        self.tabs.add(self.tab_video, text="Video")
+
+        frame_top = ttk.Frame(self.tab_threshold, padding=10)
         frame_top.pack(fill="x")
 
         ttk.Button(frame_top, text="Selecionar imagens", command=self.selecionar_imagens).pack(side="left")
@@ -50,14 +65,14 @@ class AppThresholdGUI:
         )
         ttk.Button(frame_top, text="Limpar lista", command=self.limpar_lista).pack(side="left")
 
-        frame_lista = ttk.LabelFrame(self.root, text="Imagens selecionadas", padding=10)
+        frame_lista = ttk.LabelFrame(self.tab_threshold, text="Imagens selecionadas", padding=10)
         frame_lista.pack(fill="both", expand=True, padx=10, pady=(0, 10))
 
         self.lista = tk.Listbox(frame_lista, height=8)
         self.lista.pack(fill="both", expand=True)
         self.lista.bind("<<ListboxSelect>>", self._on_selecao_lista)
 
-        frame_preview = ttk.LabelFrame(self.root, text="Preview (imagem selecionada)", padding=10)
+        frame_preview = ttk.LabelFrame(self.tab_threshold, text="Preview (imagem selecionada)", padding=10)
         frame_preview.pack(fill="x", padx=10, pady=(0, 10))
 
         self.preview_labels = []
@@ -73,7 +88,7 @@ class AppThresholdGUI:
         for col in range(5):
             frame_preview.columnconfigure(col, weight=1)
 
-        frame_params = ttk.LabelFrame(self.root, text="Parametros", padding=10)
+        frame_params = ttk.LabelFrame(self.tab_threshold, text="Parametros", padding=10)
         frame_params.pack(fill="x", padx=10, pady=(0, 10))
 
         self.var_preprocess = tk.BooleanVar(value=False)
@@ -111,6 +126,34 @@ class AppThresholdGUI:
         }
 
         self.entries = {}
+        
+        # Video tab variables
+        self.video_entries: dict[str, tk.StringVar] = {}
+        self.video_method_vars: dict[str, tk.BooleanVar] = {
+            "adaptativo": tk.BooleanVar(value=True),
+            "multi_otsu": tk.BooleanVar(value=True),
+            "range": tk.BooleanVar(value=True),
+            "estatistico": tk.BooleanVar(value=True),
+            "yen": tk.BooleanVar(value=True),
+            "triangle": tk.BooleanVar(value=True),
+            "otsu": tk.BooleanVar(value=True),
+            "minimum": tk.BooleanVar(value=True),
+            "mean": tk.BooleanVar(value=True),
+            "isodata": tk.BooleanVar(value=True),
+        }
+        self.var_video_path = tk.StringVar(value="")
+        self.var_video_output_dir = tk.StringVar(value="../resultados/video")
+        self.var_video_preprocess = tk.BooleanVar(value=False)
+        self.var_video_equalize = tk.BooleanVar(value=False)
+        self.var_video_clahe = tk.BooleanVar(value=False)
+        self.var_video_stat_local = tk.BooleanVar(value=False)
+        self.var_video_range_invert = tk.BooleanVar(value=False)
+        self.var_video_blur = tk.StringVar(value="gaussian")
+        self.var_video_adaptive_method = tk.StringVar(value="gaussian")
+        self.var_video_adaptive_polarity = tk.StringVar(value="above")
+        self.var_video_multi_mode = tk.StringVar(value="levels")
+        self.var_video_stat_polarity = tk.StringVar(value="above")
+        self.var_video_show_preview = tk.BooleanVar(value=True)
 
         linha1 = ttk.Frame(frame_params)
         linha1.pack(fill="x", pady=2)
@@ -242,7 +285,7 @@ class AppThresholdGUI:
         self._add_entry(linha_fx2, "clahe_clip", "CLAHE clip", "2.0")
         self._add_entry(linha_fx2, "clahe_tile", "CLAHE tile", "8")
 
-        frame_acoes = ttk.Frame(self.root, padding=10)
+        frame_acoes = ttk.Frame(self.tab_threshold, padding=10)
         frame_acoes.pack(fill="x")
 
         ttk.Button(frame_acoes, text="Processar selecionada", command=self.processar_selecionada).pack(side="left")
@@ -252,9 +295,645 @@ class AppThresholdGUI:
         self.progress.pack(side="left", padx=10)
 
         self.status = tk.StringVar(value="Pronto.")
-        ttk.Label(self.root, textvariable=self.status, relief="sunken", anchor="w").pack(
+        ttk.Label(self.tab_threshold, textvariable=self.status, relief="sunken", anchor="w").pack(
             fill="x", side="bottom", ipady=4
         )
+
+        self._build_color_tab()
+        self._build_video_tab()
+
+    def _build_video_tab(self) -> None:
+        topo = ttk.Frame(self.tab_video, padding=10)
+        topo.pack(fill="x")
+
+        ttk.Button(topo, text="Selecionar video", command=self.selecionar_video).pack(side="left")
+        ttk.Button(topo, text="Selecionar pasta saida", command=self.selecionar_video_output_dir).pack(side="left", padx=8)
+        ttk.Button(topo, text="Processar video", command=self.processar_video_gui).pack(side="left", padx=8)
+
+        params = ttk.LabelFrame(self.tab_video, text="Arquivo e Output", padding=10)
+        params.pack(fill="x", padx=10, pady=(0, 10))
+
+        l1 = ttk.Frame(params)
+        l1.pack(fill="x", pady=2)
+        ttk.Label(l1, text="Video:").pack(side="left")
+        ttk.Entry(l1, textvariable=self.var_video_path, width=90).pack(side="left", padx=5, fill="x", expand=True)
+
+        l2 = ttk.Frame(params)
+        l2.pack(fill="x", pady=2)
+        ttk.Label(l2, text="Pasta saida:").pack(side="left")
+        ttk.Entry(l2, textvariable=self.var_video_output_dir, width=90).pack(side="left", padx=5, fill="x", expand=True)
+        ttk.Checkbutton(l2, text="Mostrar preview (q para sair)", variable=self.var_video_show_preview).pack(side="left", padx=10)
+
+        # Metodos threshold
+        frame_metodos = ttk.LabelFrame(self.tab_video, text="Thresholds a aplicar", padding=8)
+        frame_metodos.pack(fill="x", padx=10, pady=(0, 10))
+
+        botoes_metodos = ttk.Frame(frame_metodos)
+        botoes_metodos.pack(fill="x", pady=(0, 4))
+        ttk.Button(botoes_metodos, text="Selecionar todos", command=self._video_selecionar_todos).pack(side="left")
+        ttk.Button(botoes_metodos, text="Limpar selecao", command=self._video_limpar_selecao).pack(side="left", padx=8)
+
+        grid_metodos = ttk.Frame(frame_metodos)
+        grid_metodos.pack(fill="x")
+        labels = [
+            ("adaptativo", "Adaptativo"),
+            ("multi_otsu", "Multi-Otsu"),
+            ("range", "Range"),
+            ("estatistico", "Estatistico"),
+            ("yen", "Yen"),
+            ("triangle", "Triangle"),
+            ("otsu", "Otsu"),
+            ("minimum", "Minimum"),
+            ("mean", "Mean"),
+            ("isodata", "ISODATA"),
+        ]
+        for i, (key, label) in enumerate(labels):
+            ttk.Checkbutton(grid_metodos, text=label, variable=self.video_method_vars[key]).grid(row=i // 5, column=i % 5, sticky="w", padx=6, pady=2)
+
+        # Parametros
+        frame_params = ttk.LabelFrame(self.tab_video, text="Parametros de Threshold", padding=10)
+        frame_params.pack(fill="x", padx=10, pady=(0, 10))
+
+        linha1 = ttk.Frame(frame_params)
+        linha1.pack(fill="x", pady=2)
+        ttk.Checkbutton(linha1, text="Estatistico local", variable=self.var_video_stat_local).pack(side="left", padx=10)
+        ttk.Checkbutton(linha1, text="Inverter Range", variable=self.var_video_range_invert).pack(side="left", padx=10)
+
+        linha2 = ttk.Frame(frame_params)
+        linha2.pack(fill="x", pady=2)
+        ttk.Label(linha2, text="Metodo adaptativo:").pack(side="left")
+        ttk.Combobox(
+            linha2,
+            textvariable=self.var_video_adaptive_method,
+            values=["gaussian", "mean", "median"],
+            state="readonly",
+            width=10,
+        ).pack(side="left", padx=(5, 16))
+
+        ttk.Label(linha2, text="Polaridade adaptativo:").pack(side="left")
+        ttk.Combobox(
+            linha2,
+            textvariable=self.var_video_adaptive_polarity,
+            values=["above", "below"],
+            state="readonly",
+            width=8,
+        ).pack(side="left", padx=(5, 16))
+
+        ttk.Label(linha2, text="Saida Multi-Otsu:").pack(side="left")
+        ttk.Combobox(
+            linha2,
+            textvariable=self.var_video_multi_mode,
+            values=["levels", "class"],
+            state="readonly",
+            width=8,
+        ).pack(side="left", padx=(5, 16))
+
+        ttk.Label(linha2, text="Polaridade estatistico:").pack(side="left")
+        ttk.Combobox(
+            linha2,
+            textvariable=self.var_video_stat_polarity,
+            values=["above", "below"],
+            state="readonly",
+            width=8,
+        ).pack(side="left", padx=(5, 12))
+
+        linha3 = ttk.Frame(frame_params)
+        linha3.pack(fill="x", pady=2)
+        self._add_video_entry(linha3, "block_size", "Block size", "35")
+        self._add_video_entry(linha3, "offset", "Offset", "10.0")
+        self._add_video_entry(linha3, "classes", "Classes", "3")
+        self._add_video_entry(linha3, "range_low", "Range low", "80")
+        self._add_video_entry(linha3, "range_high", "Range high", "170")
+
+        linha4 = ttk.Frame(frame_params)
+        linha4.pack(fill="x", pady=2)
+        self._add_video_entry(linha4, "multi_target_class", "Classe alvo", "1")
+        self._add_video_entry(linha4, "k", "k estatistico", "0.5")
+        self._add_video_entry(linha4, "stat_window", "Janela estat", "31")
+
+        # Filtros extras
+        linha_fx1 = ttk.Frame(frame_params)
+        linha_fx1.pack(fill="x", pady=2)
+        ttk.Checkbutton(linha_fx1, text="Pre-processar", variable=self.var_video_preprocess).pack(side="left")
+        ttk.Checkbutton(linha_fx1, text="Equalizar histograma", variable=self.var_video_equalize).pack(side="left", padx=10)
+        ttk.Checkbutton(linha_fx1, text="CLAHE", variable=self.var_video_clahe).pack(side="left", padx=10)
+
+        linha_fx2 = ttk.Frame(frame_params)
+        linha_fx2.pack(fill="x", pady=2)
+        ttk.Label(linha_fx2, text="Blur:").pack(side="left")
+        ttk.Combobox(
+            linha_fx2,
+            textvariable=self.var_video_blur,
+            values=["none", "gaussian", "median", "bilateral"],
+            state="readonly",
+            width=10,
+        ).pack(side="left", padx=(5, 18))
+        self._add_video_entry(linha_fx2, "blur_kernel", "Kernel blur", "5")
+        self._add_video_entry(linha_fx2, "clahe_clip", "CLAHE clip", "2.0")
+        self._add_video_entry(linha_fx2, "clahe_tile", "CLAHE tile", "8")
+
+        self.progress_video = ttk.Progressbar(self.tab_video, orient="horizontal", mode="determinate")
+        self.progress_video.pack(fill="x", padx=10, pady=(0, 10))
+
+        self.status_video = tk.StringVar(value="Selecione um video para iniciar.")
+        ttk.Label(self.tab_video, textvariable=self.status_video, relief="sunken", anchor="w").pack(fill="x", side="bottom", ipady=4)
+
+    def selecionar_video(self) -> None:
+        caminho = filedialog.askopenfilename(
+            title="Selecione video",
+            filetypes=[("Videos", "*.mp4;*.avi;*.mov;*.mkv"), ("Todos os arquivos", "*.*")],
+        )
+        if not caminho:
+            return
+        self.var_video_path.set(caminho)
+        self.status_video.set(f"Video selecionado: {os.path.basename(caminho)}")
+
+    def selecionar_video_output_dir(self) -> None:
+        pasta = filedialog.askdirectory(title="Selecione pasta para salvar videos processados")
+        if not pasta:
+            return
+        self.var_video_output_dir.set(pasta)
+
+    def _aplicar_metodo_video(self, frame_gray: np.ndarray, metodo: str, params: dict) -> np.ndarray:
+        """Aplica um método de threshold específico ao frame."""
+        if metodo == "adaptativo":
+            out, _ = threshold_adaptativo_local(
+                frame_gray,
+                block_size=params["block_size"],
+                offset=params["offset"],
+                metodo=params["adaptive_method"],
+                polaridade=params["adaptive_polarity"],
+            )
+            return out
+        elif metodo == "multi_otsu":
+            out, _ = threshold_multi_otsu(
+                frame_gray,
+                classes=params["classes"],
+                modo_saida=params["multi_mode"],
+                classe_alvo=params["multi_target_class"],
+            )
+            return out
+        elif metodo == "range":
+            out, _ = threshold_range(
+                frame_gray,
+                baixo=params["range_low"],
+                alto=params["range_high"],
+                inverter=params["range_invert"],
+            )
+            return out
+        elif metodo == "estatistico":
+            out, _ = threshold_estatistico(
+                frame_gray,
+                k=params["k"],
+                local=params["stat_local"],
+                janela_local=params["stat_window"],
+                polaridade=params["stat_polarity"],
+            )
+            return out
+        else:
+            # Métodos globais
+            extras = threshold_metodos_globais(frame_gray, {metodo})
+            if metodo in extras:
+                return extras[metodo][0]
+        return frame_gray
+
+    def processar_video_gui(self) -> None:
+        """Processa vídeo com múltiplos métodos de threshold."""
+        caminho = self.var_video_path.get().strip()
+        if not caminho:
+            messagebox.showwarning("Aviso", "Selecione um video primeiro.")
+            return
+        if not os.path.exists(caminho):
+            messagebox.showerror("Erro", "Video nao encontrado.")
+            return
+
+        try:
+            params = self._ler_parametros_video()
+        except Exception as exc:
+            messagebox.showerror("Erro", str(exc))
+            return
+
+        metodos_selecionados = self._video_metodos_selecionados()
+        if not metodos_selecionados:
+            messagebox.showwarning("Aviso", "Selecione pelo menos um metodo de threshold.")
+            return
+
+        cap = cv2.VideoCapture(caminho)
+        if not cap.isOpened():
+            messagebox.showerror("Erro", "Nao foi possivel abrir o video.")
+            return
+
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+        fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+        largura = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        altura = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+        # Criar pasta de saida
+        output_dir = self.var_video_output_dir.get().strip() or "../resultados/video"
+        os.makedirs(output_dir, exist_ok=True)
+
+        # Writers para cada metodo
+        writers = {}
+        for metodo in metodos_selecionados:
+            output_path = os.path.join(output_dir, f"video_{metodo}.mp4")
+            fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+            writer = cv2.VideoWriter(output_path, fourcc, fps, (largura, altura), True)
+            writers[metodo] = writer
+
+        self.progress_video.configure(maximum=max(1, total_frames), value=0)
+        self.status_video.set("Processando video com multiplos metodos...")
+        self.root.update_idletasks()
+
+        frame_idx = 0
+        show_preview = self.var_video_show_preview.get()
+
+        while True:
+            ok, frame = cap.read()
+            if not ok:
+                break
+            frame_idx += 1
+
+            # Preprocessar frame
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            gray_proc = preprocessar(
+                gray,
+                usar_preprocessamento=params["preprocess"],
+                blur=params["blur"],
+                blur_kernel=params["blur_kernel"],
+                equalizar_histograma=params["equalize"],
+                usar_clahe=params["clahe"],
+                clahe_clip=params["clahe_clip"],
+                clahe_tile=params["clahe_tile"],
+            )
+
+            # Aplicar cada metodo
+            for metodo in metodos_selecionados:
+                result = self._aplicar_metodo_video(gray_proc, metodo, params)
+                result_bgr = cv2.cvtColor(result, cv2.COLOR_GRAY2BGR)
+                writers[metodo].write(result_bgr)
+
+            # Preview do primeiro metodo
+            if show_preview:
+                first_metodo = list(metodos_selecionados)[0]
+                preview = self._aplicar_metodo_video(gray_proc, first_metodo, params)
+                cv2.imshow(f"Preview - {first_metodo}", preview)
+                if (cv2.waitKey(1) & 0xFF) == ord("q"):
+                    break
+
+            self.progress_video.configure(value=min(frame_idx, max(1, total_frames)))
+            if frame_idx % 10 == 0:
+                self.status_video.set(f"Processando frame {frame_idx}/{total_frames if total_frames > 0 else '?'}")
+                self.root.update_idletasks()
+
+        cap.release()
+        for writer in writers.values():
+            writer.release()
+        if show_preview:
+            cv2.destroyAllWindows()
+
+        self.status_video.set(f"Videos processados e salvos em: {output_dir}")
+        messagebox.showinfo("Sucesso", f"Videos foram salvos em:\n{output_dir}\n\nMetodos: {', '.join(metodos_selecionados)}")
+
+    def _add_video_entry(self, parent: ttk.Frame, key: str, label: str, default: str) -> None:
+        """Adiciona um campo de entrada para parâmetro de vídeo."""
+        ttk.Label(parent, text=label + ":").pack(side="left", padx=(0, 4))
+        var = tk.StringVar(value=default)
+        self.video_entries[key] = var
+        ttk.Entry(parent, textvariable=var, width=8).pack(side="left", padx=(0, 12))
+
+    def _video_selecionar_todos(self) -> None:
+        """Seleciona todos os métodos de vídeo."""
+        for var in self.video_method_vars.values():
+            var.set(True)
+
+    def _video_limpar_selecao(self) -> None:
+        """Limpa seleção de todos os métodos de vídeo."""
+        for var in self.video_method_vars.values():
+            var.set(False)
+
+    def _video_metodos_selecionados(self) -> set[str]:
+        """Retorna conjunto de métodos de vídeo selecionados."""
+        return {nome for nome, var in self.video_method_vars.items() if var.get()}
+
+    def _ler_parametros_video(self) -> dict:
+        """Lê e valida parâmetros do vídeo."""
+        try:
+            params = {
+                "preprocess": self.var_video_preprocess.get(),
+                "equalize": self.var_video_equalize.get(),
+                "clahe": self.var_video_clahe.get(),
+                "stat_local": self.var_video_stat_local.get(),
+                "blur": self.var_video_blur.get(),
+                "adaptive_method": self.var_video_adaptive_method.get(),
+                "adaptive_polarity": self.var_video_adaptive_polarity.get(),
+                "multi_mode": self.var_video_multi_mode.get(),
+                "stat_polarity": self.var_video_stat_polarity.get(),
+                "range_invert": self.var_video_range_invert.get(),
+                "block_size": int(self.video_entries["block_size"].get()),
+                "offset": float(self.video_entries["offset"].get()),
+                "classes": int(self.video_entries["classes"].get()),
+                "multi_target_class": int(self.video_entries["multi_target_class"].get()),
+                "range_low": int(self.video_entries["range_low"].get()),
+                "range_high": int(self.video_entries["range_high"].get()),
+                "k": float(self.video_entries["k"].get()),
+                "stat_window": int(self.video_entries["stat_window"].get()),
+                "blur_kernel": int(self.video_entries["blur_kernel"].get()),
+                "clahe_clip": float(self.video_entries["clahe_clip"].get()),
+                "clahe_tile": int(self.video_entries["clahe_tile"].get()),
+            }
+        except ValueError as exc:
+            raise ValueError("Verifique os parametros numericos.") from exc
+
+        # Validações
+        if params["block_size"] < 3:
+            params["block_size"] = 3
+        if params["block_size"] % 2 == 0:
+            params["block_size"] += 1
+
+        if params["stat_window"] < 3:
+            params["stat_window"] = 3
+        if params["stat_window"] % 2 == 0:
+            params["stat_window"] += 1
+
+        if params["blur"] == "none":
+            params["blur_kernel"] = 0
+        elif params["blur_kernel"] % 2 == 0:
+            params["blur_kernel"] += 1
+
+        return params
+
+    def _build_color_tab(self) -> None:
+        topo = ttk.Frame(self.tab_cor, padding=10)
+        topo.pack(fill="x")
+
+        ttk.Button(topo, text="Selecionar imagem", command=self.selecionar_imagem_cor).pack(side="left")
+        ttk.Button(topo, text="Selecionar output folder", command=self.selecionar_pasta_saida_cor).pack(side="left", padx=8)
+        ttk.Button(topo, text="Aplicar troca de cor", command=self.aplicar_troca_cor_principal).pack(side="left", padx=8)
+        ttk.Button(topo, text="Aplicar Memory Overflow", command=self.aplicar_memory_overflow).pack(side="left", padx=8)
+
+        self.var_cor_output_dir = tk.StringVar(value="resultados")
+        self.var_cor_origem = tk.StringVar(value="auto")
+        self.var_cor_destino = tk.StringVar(value="verde")
+        self.var_cor_tolerancia = tk.IntVar(value=18)
+        self.var_cor_suavizacao = tk.IntVar(value=12)
+        self.var_overflow_intensidade = tk.IntVar(value=8)
+        self.var_use_hue_sliders = tk.BooleanVar(value=False)
+        self.var_use_rgb_picker = tk.BooleanVar(value=False)
+        self.var_hue_origem = tk.IntVar(value=0)
+        self.var_hue_destino = tk.IntVar(value=60)
+        self.rgb_destino = (0, 255, 0)
+        self.hue_destino_rgb = 60
+
+        params = ttk.LabelFrame(self.tab_cor, text="Parametros da troca de cor principal", padding=10)
+        params.pack(fill="x", padx=10, pady=(0, 10))
+
+        linha1 = ttk.Frame(params)
+        linha1.pack(fill="x", pady=2)
+        ttk.Label(linha1, text="Cor origem:").pack(side="left")
+        ttk.Combobox(
+            linha1,
+            textvariable=self.var_cor_origem,
+            values=["auto"] + list(COR_PARA_HUE.keys()),
+            state="readonly",
+            width=12,
+        ).pack(side="left", padx=(5, 20))
+
+        ttk.Label(linha1, text="Cor destino:").pack(side="left")
+        ttk.Combobox(
+            linha1,
+            textvariable=self.var_cor_destino,
+            values=list(COR_PARA_HUE.keys()),
+            state="readonly",
+            width=12,
+        ).pack(side="left", padx=(5, 20))
+
+        ttk.Label(linha1, text="Output:").pack(side="left")
+        ttk.Entry(linha1, textvariable=self.var_cor_output_dir, width=35).pack(side="left", padx=5)
+
+        linha_opt = ttk.Frame(params)
+        linha_opt.pack(fill="x", pady=2)
+        ttk.Checkbutton(
+            linha_opt,
+            text="Usar sliders de Hue (opcional)",
+            variable=self.var_use_hue_sliders,
+        ).pack(side="left")
+        ttk.Checkbutton(
+            linha_opt,
+            text="Usar seletor RGB para cor destino",
+            variable=self.var_use_rgb_picker,
+        ).pack(side="left", padx=10)
+        ttk.Button(linha_opt, text="Escolher cor final (RGB)", command=self.selecionar_cor_rgb_destino).pack(side="left", padx=10)
+        self.lbl_rgb_destino = tk.Label(linha_opt, text="   ", bg="#00ff00", relief="groove")
+        self.lbl_rgb_destino.pack(side="left")
+
+        linha2 = ttk.Frame(params)
+        linha2.pack(fill="x", pady=2)
+        ttk.Label(linha2, text="Tolerancia de hue:").pack(side="left")
+        ttk.Scale(linha2, from_=0, to=60, variable=self.var_cor_tolerancia, orient="horizontal", length=220).pack(side="left", padx=6)
+        ttk.Label(linha2, textvariable=self.var_cor_tolerancia, width=4).pack(side="left")
+
+        ttk.Label(linha2, text="Suavizacao:").pack(side="left", padx=(20, 0))
+        ttk.Scale(linha2, from_=0, to=60, variable=self.var_cor_suavizacao, orient="horizontal", length=220).pack(side="left", padx=6)
+        ttk.Label(linha2, textvariable=self.var_cor_suavizacao, width=4).pack(side="left")
+
+        linha_hue = ttk.Frame(params)
+        linha_hue.pack(fill="x", pady=2)
+        ttk.Label(linha_hue, text="Hue origem (slider):").pack(side="left")
+        ttk.Scale(linha_hue, from_=0, to=179, variable=self.var_hue_origem, orient="horizontal", length=220).pack(side="left", padx=6)
+        ttk.Label(linha_hue, textvariable=self.var_hue_origem, width=4).pack(side="left")
+
+        ttk.Label(linha_hue, text="Hue destino (slider):").pack(side="left", padx=(20, 0))
+        ttk.Scale(linha_hue, from_=0, to=179, variable=self.var_hue_destino, orient="horizontal", length=220).pack(side="left", padx=6)
+        ttk.Label(linha_hue, textvariable=self.var_hue_destino, width=4).pack(side="left")
+
+        linha3 = ttk.Frame(params)
+        linha3.pack(fill="x", pady=2)
+        ttk.Label(linha3, text="Intensidade Memory Overflow:").pack(side="left")
+        ttk.Scale(
+            linha3,
+            from_=1,
+            to=20,
+            variable=self.var_overflow_intensidade,
+            orient="horizontal",
+            length=220,
+        ).pack(side="left", padx=6)
+        ttk.Label(linha3, textvariable=self.var_overflow_intensidade, width=4).pack(side="left")
+
+        prev = ttk.LabelFrame(self.tab_cor, text="Preview troca de cor", padding=10)
+        prev.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+
+        self.lbl_cor_original = ttk.Label(prev, text="Original", anchor="center")
+        self.lbl_cor_original.grid(row=0, column=0, padx=10, pady=4)
+        self.lbl_cor_resultado = ttk.Label(prev, text="Resultado", anchor="center")
+        self.lbl_cor_resultado.grid(row=0, column=1, padx=10, pady=4)
+
+        self.lbl_cor_img_original = ttk.Label(prev)
+        self.lbl_cor_img_original.grid(row=1, column=0, padx=10, pady=4)
+        self.lbl_cor_img_resultado = ttk.Label(prev)
+        self.lbl_cor_img_resultado.grid(row=1, column=1, padx=10, pady=4)
+        prev.columnconfigure(0, weight=1)
+        prev.columnconfigure(1, weight=1)
+
+        self.status_cor = tk.StringVar(value="Selecione uma imagem para troca de cor principal.")
+        ttk.Label(self.tab_cor, textvariable=self.status_cor, relief="sunken", anchor="w").pack(fill="x", side="bottom", ipady=4)
+
+        self.var_cor_origem.trace_add("write", lambda *_: self._on_cor_param_change())
+        self.var_cor_destino.trace_add("write", lambda *_: self._on_cor_param_change())
+        self.var_cor_tolerancia.trace_add("write", lambda *_: self._on_cor_param_change())
+        self.var_cor_suavizacao.trace_add("write", lambda *_: self._on_cor_param_change())
+        self.var_overflow_intensidade.trace_add("write", lambda *_: self._on_cor_param_change())
+        self.var_use_hue_sliders.trace_add("write", lambda *_: self._on_cor_param_change())
+        self.var_use_rgb_picker.trace_add("write", lambda *_: self._on_cor_param_change())
+        self.var_hue_origem.trace_add("write", lambda *_: self._on_cor_param_change())
+        self.var_hue_destino.trace_add("write", lambda *_: self._on_cor_param_change())
+
+    def _on_cor_param_change(self) -> None:
+        if self.caminho_cor:
+            self._atualizar_preview_cor()
+
+    def selecionar_imagem_cor(self) -> None:
+        caminho = filedialog.askopenfilename(
+            title="Selecione imagem para troca de cor",
+            filetypes=[("Imagens", "*.png;*.jpg;*.jpeg;*.bmp;*.tif;*.tiff"), ("Todos os arquivos", "*.*")],
+        )
+        if not caminho:
+            return
+        self.caminho_cor = caminho
+        self.status_cor.set(f"Imagem selecionada: {os.path.basename(caminho)}")
+        self._atualizar_preview_cor()
+
+    def selecionar_pasta_saida_cor(self) -> None:
+        pasta = filedialog.askdirectory(title="Selecione pasta de saida para troca de cor")
+        if not pasta:
+            return
+        self.var_cor_output_dir.set(pasta)
+        self.status_cor.set(f"Pasta de saida (troca de cor): {pasta}")
+
+    def selecionar_cor_rgb_destino(self) -> None:
+        rgb, _hex = colorchooser.askcolor(color="#%02x%02x%02x" % self.rgb_destino, title="Escolher cor final")
+        if rgb is None:
+            return
+        r, g, b = [int(np.clip(v, 0, 255)) for v in rgb]
+        self.rgb_destino = (r, g, b)
+        hsv = cv2.cvtColor(np.array([[[b, g, r]]], dtype=np.uint8), cv2.COLOR_BGR2HSV)
+        self.hue_destino_rgb = int(hsv[0, 0, 0])
+        self.lbl_rgb_destino.configure(bg="#%02x%02x%02x" % (r, g, b))
+        self.status_cor.set(f"Cor final RGB selecionada: ({r}, {g}, {b}) -> Hue {self.hue_destino_rgb}")
+        self._on_cor_param_change()
+
+    def _aplicar_filtro_cor_em_bgr(self, bgr: np.ndarray) -> tuple[np.ndarray, dict]:
+        tol = int(self.var_cor_tolerancia.get())
+        fea = int(self.var_cor_suavizacao.get())
+
+        if self.var_use_hue_sliders.get():
+            hue_origem = int(np.clip(self.var_hue_origem.get(), 0, 179))
+        else:
+            origem_nome = self.var_cor_origem.get()
+            if origem_nome == "auto":
+                hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV).astype(np.float32)
+                hue_origem = int(detectar_hue_principal(hsv[:, :, 0], hsv[:, :, 1], hsv[:, :, 2]))
+            else:
+                hue_origem = int(COR_PARA_HUE[origem_nome])
+
+        if self.var_use_rgb_picker.get():
+            hue_destino = int(self.hue_destino_rgb)
+        elif self.var_use_hue_sliders.get():
+            hue_destino = int(np.clip(self.var_hue_destino.get(), 0, 179))
+        else:
+            hue_destino = int(COR_PARA_HUE[self.var_cor_destino.get()])
+
+        saida_bgr, meta = shift_color(
+            image_bgr=bgr,
+            source_hue=hue_origem,
+            target_hue=hue_destino,
+            tolerance=tol,
+            feather=fea,
+        )
+        meta["modo_hue"] = "slider" if self.var_use_hue_sliders.get() else "combobox/auto"
+        meta["modo_destino"] = "rgb_picker" if self.var_use_rgb_picker.get() else ("slider" if self.var_use_hue_sliders.get() else "combobox")
+        return saida_bgr, meta
+
+    def _atualizar_preview_cor(self) -> None:
+        if not self.caminho_cor:
+            return
+        bgr = cv2.imread(self.caminho_cor, cv2.IMREAD_COLOR)
+        if bgr is None:
+            self.status_cor.set("Falha ao abrir imagem para preview.")
+            return
+
+        try:
+            if self.modo_preview_cor == "overflow":
+                saida_bgr = memory_overflow_glitch(
+                    image_bgr=bgr,
+                    intensity=int(self.var_overflow_intensidade.get()),
+                )
+            else:
+                saida_bgr, _ = self._aplicar_filtro_cor_em_bgr(bgr)
+        except Exception as exc:
+            self.status_cor.set(f"Erro no preview de troca de cor: {exc}")
+            return
+
+        orig_rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+        res_rgb = cv2.cvtColor(saida_bgr, cv2.COLOR_BGR2RGB)
+        t1 = self._imagem_para_thumbnail(orig_rgb, largura=360, altura=260)
+        t2 = self._imagem_para_thumbnail(res_rgb, largura=360, altura=260)
+        self.preview_color_images = [t1, t2]
+        self.lbl_cor_img_original.configure(image=t1)
+        self.lbl_cor_img_resultado.configure(image=t2)
+
+    def aplicar_troca_cor_principal(self) -> None:
+        if not self.caminho_cor:
+            messagebox.showwarning("Aviso", "Selecione uma imagem na aba Troca de Cor.")
+            return
+
+        bgr = cv2.imread(self.caminho_cor, cv2.IMREAD_COLOR)
+        if bgr is None:
+            messagebox.showerror("Erro", "Falha ao abrir imagem para troca de cor.")
+            return
+
+        try:
+            self.modo_preview_cor = "troca"
+            saida_bgr, meta = self._aplicar_filtro_cor_em_bgr(bgr)
+            dir_saida = os.path.join(self.var_cor_output_dir.get().strip() or "resultados", "img")
+            caminho_saida = salvar_troca_cor(self.caminho_cor, saida_bgr, dir_saida)
+            self.status_cor.set(
+                f"Troca aplicada. Origem hue={meta['source_hue']:.1f}, destino hue={meta['target_hue']:.1f}. Salvo em: {caminho_saida}"
+            )
+            self._atualizar_preview_cor()
+        except Exception as exc:
+            messagebox.showerror("Erro", str(exc))
+            self.status_cor.set("Erro ao aplicar troca de cor principal.")
+
+    def aplicar_memory_overflow(self) -> None:
+        if not self.caminho_cor:
+            messagebox.showwarning("Aviso", "Selecione uma imagem na aba Troca de Cor.")
+            return
+
+        bgr = cv2.imread(self.caminho_cor, cv2.IMREAD_COLOR)
+        if bgr is None:
+            messagebox.showerror("Erro", "Falha ao abrir imagem para efeito Memory Overflow.")
+            return
+
+        try:
+            self.modo_preview_cor = "overflow"
+            saida_bgr = memory_overflow_glitch(
+                image_bgr=bgr,
+                intensity=int(self.var_overflow_intensidade.get()),
+            )
+            dir_saida = os.path.join(self.var_cor_output_dir.get().strip() or "resultados", "img")
+            caminho_saida = salvar_troca_cor(
+                self.caminho_cor,
+                saida_bgr,
+                dir_saida,
+                sufixo=f"memory_overflow_i{int(self.var_overflow_intensidade.get())}",
+            )
+            self.status_cor.set(
+                f"Memory Overflow aplicado (intensidade={int(self.var_overflow_intensidade.get())}). Salvo em: {caminho_saida}"
+            )
+            self._atualizar_preview_cor()
+        except Exception as exc:
+            messagebox.showerror("Erro", str(exc))
+            self.status_cor.set("Erro ao aplicar Memory Overflow.")
 
     def _add_entry(self, parent: ttk.Frame, key: str, label: str, default: str) -> None:
         ttk.Label(parent, text=label + ":").pack(side="left", padx=(0, 4))

@@ -3,6 +3,7 @@
 Script principal: `processamento_thresholds.py`
 
 Interface local (sem Streamlit): `main.py`
+Modulo de filtros de troca de cor principal: `filtros_cor.py`
 
 ## Bibliotecas
 
@@ -107,6 +108,23 @@ Na interface voce pode:
 - Clicar em `Mostrar filtros extras` para abrir as opcoes auxiliares de filtros
 - Exibir e/ou salvar uma analise avancada com histogramas e graficos de apoio
 - Acompanhar barra de progresso durante o processamento
+
+Agora o app possui duas abas:
+
+- `Threshold`: fluxo completo de limiarizacao e analise
+- `Troca de Cor`: filtro para trocar a cor principal da imagem (ex.: vermelho -> verde), preservando luminosidade
+
+Na aba `Troca de Cor`:
+
+- Selecione imagem de entrada
+- Escolha cor de origem (`auto` ou manual) por combobox
+- Escolha cor de destino por combobox
+- Opcional: ative `Usar sliders de Hue` para ajustar origem/destino por matiz numerica (0-179)
+- Opcional: ative `Usar seletor RGB para cor destino` e use `Escolher cor final (RGB)`
+- Ajuste tolerancia e suavizacao
+- Aplique e salve em `resultados/img` (ou pasta de saida escolhida)
+- Aplique tambem o efeito `Memory Overflow` com intensidade configuravel
+- Preview em tempo real para os parametros de troca de cor e overflow
 
 ## Observacao
 
