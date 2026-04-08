@@ -26,7 +26,7 @@ from processamento_thresholds import (
     threshold_multi_otsu,
     threshold_range,
 )
-from filtros_cor import COR_PARA_HUE, memory_overflow_glitch, salvar_troca_cor
+from filtros_cor import COR_PARA_HUE, memory_overflow_glitch, salvar_troca_cor, salvar_troca_cor_com_filtros
 from filtros_cor import detectar_hue_principal, shift_color
 
 
@@ -684,6 +684,22 @@ class AppThresholdGUI:
         self.rgb_destino = (0, 255, 0)
         self.hue_destino_rgb = 60
 
+        # Filtros para troca de cor e memory overflow
+        self.filtros_cor_vars = {
+            "blur": tk.BooleanVar(value=False),
+            "rotacao": tk.BooleanVar(value=False),
+            "onda": tk.BooleanVar(value=False),
+            "brilho_contraste": tk.BooleanVar(value=False),
+            "saturacao": tk.BooleanVar(value=True),
+        }
+        self.filtros_overflow_vars = {
+            "blur": tk.BooleanVar(value=True),
+            "rotacao": tk.BooleanVar(value=True),
+            "onda": tk.BooleanVar(value=True),
+            "brilho_contraste": tk.BooleanVar(value=True),
+            "saturacao": tk.BooleanVar(value=True),
+        }
+
         params = ttk.LabelFrame(self.tab_cor, text="Parametros da troca de cor principal", padding=10)
         params.pack(fill="x", padx=10, pady=(0, 10))
 
@@ -758,6 +774,18 @@ class AppThresholdGUI:
             length=220,
         ).pack(side="left", padx=6)
         ttk.Label(linha3, textvariable=self.var_overflow_intensidade, width=4).pack(side="left")
+
+        # Filtros para troca de cor
+        linha_filtros_cor = ttk.LabelFrame(params, text="Filtros na troca de cor", padding=8)
+        linha_filtros_cor.pack(fill="x", pady=(8, 2))
+        for i, (nome_filtro, var) in enumerate(self.filtros_cor_vars.items()):
+            ttk.Checkbutton(linha_filtros_cor, text=nome_filtro.replace("_", " ").title(), variable=var).pack(side="left", padx=6)
+
+        # Filtros para memory overflow
+        linha_filtros_overflow = ttk.LabelFrame(params, text="Filtros no Memory Overflow", padding=8)
+        linha_filtros_overflow.pack(fill="x", pady=(2, 8))
+        for i, (nome_filtro, var) in enumerate(self.filtros_overflow_vars.items()):
+            ttk.Checkbutton(linha_filtros_overflow, text=nome_filtro.replace("_", " ").title(), variable=var).pack(side="left", padx=6)
 
         prev = ttk.LabelFrame(self.tab_cor, text="Preview troca de cor", padding=10)
         prev.pack(fill="both", expand=True, padx=10, pady=(0, 10))
@@ -895,7 +923,23 @@ class AppThresholdGUI:
             self.modo_preview_cor = "troca"
             saida_bgr, meta = self._aplicar_filtro_cor_em_bgr(bgr)
             dir_saida = os.path.join(self.var_cor_output_dir.get().strip() or "resultados", "img")
-            caminho_saida = salvar_troca_cor(self.caminho_cor, saida_bgr, dir_saida)
+            
+            # Coleta filtros selecionados
+            filtros_selecionados = {nome for nome, var in self.filtros_cor_vars.items() if var.get()}
+            
+            if filtros_selecionados:
+                # Salva com filtros se algum foi selecionado
+                caminho_saida = salvar_troca_cor_com_filtros(
+                    self.caminho_cor,
+                    saida_bgr,
+                    dir_saida,
+                    filtros=filtros_selecionados,
+                    sufixo="troca_cor_com_filtros",
+                )
+            else:
+                # Salva sem filtros se nenhum selecionado
+                caminho_saida = salvar_troca_cor(self.caminho_cor, saida_bgr, dir_saida)
+            
             self.status_cor.set(
                 f"Troca aplicada. Origem hue={meta['source_hue']:.1f}, destino hue={meta['target_hue']:.1f}. Salvo em: {caminho_saida}"
             )
@@ -916,19 +960,28 @@ class AppThresholdGUI:
 
         try:
             self.modo_preview_cor = "overflow"
+            
+            # Coleta filtros selecionados para memory overflow
+            filtros_selecionados = {nome for nome, var in self.filtros_overflow_vars.items() if var.get()}
+            
             saida_bgr = memory_overflow_glitch(
                 image_bgr=bgr,
                 intensity=int(self.var_overflow_intensidade.get()),
+                filtros=filtros_selecionados if filtros_selecionados else None,
             )
             dir_saida = os.path.join(self.var_cor_output_dir.get().strip() or "resultados", "img")
+            
+            # Nome dos filtros aplicados
+            filtros_str = "_".join(sorted(filtros_selecionados)) if filtros_selecionados else "default"
+            
             caminho_saida = salvar_troca_cor(
                 self.caminho_cor,
                 saida_bgr,
                 dir_saida,
-                sufixo=f"memory_overflow_i{int(self.var_overflow_intensidade.get())}",
+                sufixo=f"memory_overflow_i{int(self.var_overflow_intensidade.get())}_f{filtros_str}",
             )
             self.status_cor.set(
-                f"Memory Overflow aplicado (intensidade={int(self.var_overflow_intensidade.get())}). Salvo em: {caminho_saida}"
+                f"Memory Overflow aplicado (intensidade={int(self.var_overflow_intensidade.get())}, filtros={filtros_str}). Salvo em: {caminho_saida}"
             )
             self._atualizar_preview_cor()
         except Exception as exc:
