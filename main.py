@@ -671,7 +671,7 @@ class AppThresholdGUI:
         ttk.Button(topo, text="Aplicar troca de cor", command=self.aplicar_troca_cor_principal).pack(side="left", padx=8)
         ttk.Button(topo, text="Aplicar Memory Overflow", command=self.aplicar_memory_overflow).pack(side="left", padx=8)
 
-        self.var_cor_output_dir = tk.StringVar(value="resultados")
+        self.var_cor_output_dir = tk.StringVar(value="../resultados/img_colorida")
         self.var_cor_origem = tk.StringVar(value="auto")
         self.var_cor_destino = tk.StringVar(value="verde")
         self.var_cor_tolerancia = tk.IntVar(value=18)
@@ -922,7 +922,7 @@ class AppThresholdGUI:
         try:
             self.modo_preview_cor = "troca"
             saida_bgr, meta = self._aplicar_filtro_cor_em_bgr(bgr)
-            dir_saida = os.path.join(self.var_cor_output_dir.get().strip() or "resultados", "img")
+            dir_saida = self.var_cor_output_dir.get().strip() or "../resultados/img_colorida"
             
             # Coleta filtros selecionados
             filtros_selecionados = {nome for nome, var in self.filtros_cor_vars.items() if var.get()}
@@ -969,7 +969,7 @@ class AppThresholdGUI:
                 intensity=int(self.var_overflow_intensidade.get()),
                 filtros=filtros_selecionados if filtros_selecionados else None,
             )
-            dir_saida = os.path.join(self.var_cor_output_dir.get().strip() or "resultados", "img")
+            dir_saida = self.var_cor_output_dir.get().strip() or "../resultados/img_colorida"
             
             # Nome dos filtros aplicados
             filtros_str = "_".join(sorted(filtros_selecionados)) if filtros_selecionados else "default"
