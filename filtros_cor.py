@@ -135,16 +135,20 @@ def memory_overflow_glitch(
     seed: Optional[int] = None,
 ) -> np.ndarray:
     """
-    Simula efeito de estouro de memoria com pirâmide invertida e múltiplos efeitos.
+    Simula efeito de estouro de memoria com triângulo invertido no eixo Y.
     
-    Cria uma composição em pirâmide com a imagem menor em cima, aplicando:
+    Estrutura vertical:
+    - Base (fundo): Imagem original em alta definição
+    - Meio: Miniaturas coloridas reduzidas
+    - Topo: Filtros distorcidos cada vez menores
+    
+    Criando um triângulo invertido com múltiplos efeitos:
     - Mudanças de cor progressivas
-    - Blur e rotação
-    - Distorção tipo onda
-    - Variações de brilho, contraste e saturação
+    - Distorção aumentando para o topo
+    - Diferentes intensidades de efeitos por camada
     """
     rng = np.random.default_rng(seed)
-    intensity = max(1, int(intensity))
+    intensity = max(2, int(intensity))
     scale_decay = float(np.clip(scale_decay, 0.55, 0.95))
     jitter = max(0, int(jitter))
 
@@ -152,70 +156,86 @@ def memory_overflow_glitch(
     canvas = image_bgr.astype(np.float32).copy()
     base = image_bgr.copy()
 
-    # Cria pirâmide invertida (menor em cima, maior embaixo)
-    layers = []
-    for i in range(intensity):
+    # Layer 0: Imagem original em alta definição como base
+    base_processed = base.copy()
+    # Aplicar suave efeito de cor na base
+    hue_base = float(rng.integers(0, 180))
+    hue_target = float((hue_base + rng.integers(20, 60)) % 180)
+    base_colored, _ = shift_color(
+        base_processed,
+        source_hue=hue_base,
+        target_hue=hue_target,
+        tolerance=30,
+        feather=12,
+    )
+    base_saturated = _aplicar_saturacao(base_colored, rng.uniform(0.8, 1.2))
+    canvas = base_saturated.astype(np.float32)
+
+    # Cria camadas em triângulo invertido (menores acima)
+    y_offset = h - 40  # Começa próximo ao fundo
+    
+    for i in range(1, intensity):
         scale = scale_decay ** i
         new_w = max(24, int(w * scale))
         new_h = max(24, int(h * scale))
         resized = cv2.resize(base, (new_w, new_h), interpolation=cv2.INTER_AREA)
 
-        # Aplica múltiplos efeitos
-        # 1. Mudança de cor
-        hue_src = float((i * 23) % 180)
-        hue_dst = float((hue_src + rng.integers(30, 110)) % 180)
+        # Efeitos aumentam a cada camada (mais intensos para cima)
+        effect_intensity = i / max(1, intensity - 1)
+
+        # 1. Mudança de cor (mais radical nas camadas superiores)
+        hue_src = float((i * 27 + rng.integers(0, 30)) % 180)
+        hue_dst = float((hue_src + rng.integers(40, 140)) % 180)
         recolored, _ = shift_color(
             resized,
             source_hue=hue_src,
             target_hue=hue_dst,
-            tolerance=42,
-            feather=16,
+            tolerance=50,
+            feather=20,
         )
 
-        # 2. Blur progressivo aumentando a cada camada
-        blur_kernel = 3 + i * 2
+        # 2. Blur: menos blur nas camadas de cima
+        blur_kernel = max(3, int(5 - i * 0.8))
+        if blur_kernel % 2 == 0:
+            blur_kernel += 1
         blurred = _aplicar_blur_progressivo(recolored, blur_kernel)
 
-        # 3. Rotação suave
-        angle = rng.uniform(-12, 12)
+        # 3. Rotação cada vez mais intensa
+        angle = rng.uniform(-25 * effect_intensity, 25 * effect_intensity)
         rotated = _aplicar_rotacao_suave(blurred, angle)
 
-        # 4. Distorção tipo onda
-        distorted = _aplicar_distorcao_onda(rotated, amplitude=2.0 + i * 1.5)
+        # 4. Distorção tipo onda: MUITO mais intensa nas camadas de cima
+        wave_amplitude = 3.0 + i * 4.5
+        distorted = _aplicar_distorcao_onda(rotated, amplitude=wave_amplitude)
 
-        # 5. Brilho, contraste e saturação
-        brightness = rng.uniform(-0.1, 0.15)
-        contrast = rng.uniform(0.7, 1.3)
-        saturation = rng.uniform(0.6, 1.4)
+        # 5. Brilho, contraste e saturação extremos para cima
+        brightness = rng.uniform(-0.25 * effect_intensity, 0.30 * effect_intensity)
+        contrast = rng.uniform(0.5 + effect_intensity * 0.5, 1.5 + effect_intensity * 0.3)
+        saturation = rng.uniform(0.4 + effect_intensity * 0.5, 1.8)
+        
         adjusted = _aplicar_brilho_contraste(distorted, brightness, contrast)
         adjusted = _aplicar_saturacao(adjusted, saturation)
 
-        layers.append({
-            "image": adjusted,
-            "width": new_w,
-            "height": new_h,
-            "layer_index": i,
-        })
-
-    # Composição em pirâmide invertida (menores em cima/centro)
-    for layer_data in layers:
-        layer_img = layer_data["image"]
-        lw = layer_data["width"]
-        lh = layer_data["height"]
-        layer_idx = layer_data["layer_index"]
-
-        # Posiciona em torno do centro com leve jitter
-        cx = w // 2 + int(rng.integers(-jitter, jitter + 1))
-        cy = h // 2 + int(rng.integers(-jitter, jitter + 1))
-        x0 = int(np.clip(cx - lw // 2, 0, max(0, w - lw)))
-        y0 = int(np.clip(cy - lh // 2, 0, max(0, h - lh)))
-
-        # Transparência aumenta conforme desce a pirâmide
-        alpha = max(0.10, 0.70 - layer_idx * 0.065)
+        # Posiciona verticalmente (eixo Y) - sobe conforme aumenta i
+        cx = w // 2 + int(rng.integers(-jitter // 2, jitter // 2 + 1))
+        x0 = int(np.clip(cx - new_w // 2, 0, max(0, w - new_w)))
         
-        roi = canvas[y0 : y0 + lh, x0 : x0 + lw]
-        layer = layer_img.astype(np.float32)
-        canvas[y0 : y0 + lh, x0 : x0 + lw] = roi * (1.0 - alpha) + layer * (alpha)
+        # Y desce a cada camada (triângulo invertido)
+        y0 = max(0, int(y_offset - new_h))
+        y_offset = y0
+        
+        # Garante que não sai do canvas
+        if y0 + new_h > h:
+            y0 = max(0, h - new_h)
+
+        # Transparência aumenta conforme sobe (camadas de cima mais visíveis)
+        alpha = max(0.2, 0.85 - (intensity - i) * 0.08)
+        
+        # Composição com blending
+        if y0 + new_h <= h and x0 + new_w <= w:
+            roi = canvas[y0 : y0 + new_h, x0 : x0 + new_w]
+            layer = adjusted.astype(np.float32)
+            canvas[y0 : y0 + new_h, x0 : x0 + new_w] = roi * (1.0 - alpha) + layer * alpha
 
     return np.clip(canvas, 0, 255).astype(np.uint8)
 
