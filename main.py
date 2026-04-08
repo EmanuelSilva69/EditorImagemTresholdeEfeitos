@@ -44,6 +44,43 @@ class AppThresholdGUI:
 
         self._build_ui()
 
+    def _create_scrollable_tab(self, parent: ttk.Notebook) -> ttk.Frame:
+        """Cria uma área rolável para conteúdos longos dentro de uma aba."""
+        container = ttk.Frame(parent)
+        canvas = tk.Canvas(container, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(container, orient="vertical", command=canvas.yview)
+        content = ttk.Frame(canvas)
+
+        content_window = canvas.create_window((0, 0), window=content, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        def _on_configure(_event: tk.Event) -> None:
+            canvas.configure(scrollregion=canvas.bbox("all"))
+
+        def _on_canvas_configure(event: tk.Event) -> None:
+            canvas.itemconfigure(content_window, width=event.width)
+
+        content.bind("<Configure>", _on_configure)
+        canvas.bind("<Configure>", _on_canvas_configure)
+
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
+        container.canvas = canvas  # type: ignore[attr-defined]
+        container.content = content  # type: ignore[attr-defined]
+        return container
+
+    def _toggle_section(self, frame: ttk.Widget, button: ttk.Button, shown_text: str, hidden_text: str, visible: bool, pack_kwargs: dict) -> bool:
+        """Mostra ou esconde uma seção mantendo o botão como gatilho."""
+        if visible:
+            frame.pack_forget()
+            button.configure(text=hidden_text)
+            return False
+
+        frame.pack(**pack_kwargs)
+        button.configure(text=shown_text)
+        return True
+
     def _build_ui(self) -> None:
         self.tabs = ttk.Notebook(self.root)
         self.tabs.pack(fill="both", expand=True)
@@ -55,7 +92,19 @@ class AppThresholdGUI:
         self.tabs.add(self.tab_cor, text="Troca de Cor")
         self.tabs.add(self.tab_video, text="Video")
 
-        frame_top = ttk.Frame(self.tab_threshold, padding=10)
+        self.threshold_shell = self._create_scrollable_tab(self.tab_threshold)
+        self.threshold_shell.pack(fill="both", expand=True)
+        self.threshold_content = self.threshold_shell.content  # type: ignore[attr-defined]
+
+        self.cor_shell = self._create_scrollable_tab(self.tab_cor)
+        self.cor_shell.pack(fill="both", expand=True)
+        self.cor_content = self.cor_shell.content  # type: ignore[attr-defined]
+
+        self.video_shell = self._create_scrollable_tab(self.tab_video)
+        self.video_shell.pack(fill="both", expand=True)
+        self.video_content = self.video_shell.content  # type: ignore[attr-defined]
+
+        frame_top = ttk.Frame(self.threshold_content, padding=10)
         frame_top.pack(fill="x")
 
         ttk.Button(frame_top, text="Selecionar imagens", command=self.selecionar_imagens).pack(side="left")
@@ -65,14 +114,14 @@ class AppThresholdGUI:
         )
         ttk.Button(frame_top, text="Limpar lista", command=self.limpar_lista).pack(side="left")
 
-        frame_lista = ttk.LabelFrame(self.tab_threshold, text="Imagens selecionadas", padding=10)
+        frame_lista = ttk.LabelFrame(self.threshold_content, text="Imagens selecionadas", padding=10)
         frame_lista.pack(fill="both", expand=True, padx=10, pady=(0, 10))
 
         self.lista = tk.Listbox(frame_lista, height=8)
         self.lista.pack(fill="both", expand=True)
         self.lista.bind("<<ListboxSelect>>", self._on_selecao_lista)
 
-        frame_preview = ttk.LabelFrame(self.tab_threshold, text="Preview (imagem selecionada)", padding=10)
+        frame_preview = ttk.LabelFrame(self.threshold_content, text="Preview (imagem selecionada)", padding=10)
         frame_preview.pack(fill="x", padx=10, pady=(0, 10))
 
         self.preview_labels = []
@@ -88,7 +137,7 @@ class AppThresholdGUI:
         for col in range(5):
             frame_preview.columnconfigure(col, weight=1)
 
-        frame_params = ttk.LabelFrame(self.tab_threshold, text="Parametros", padding=10)
+        frame_params = ttk.LabelFrame(self.threshold_content, text="Parametros", padding=10)
         frame_params.pack(fill="x", padx=10, pady=(0, 10))
 
         self.var_preprocess = tk.BooleanVar(value=False)
@@ -263,6 +312,13 @@ class AppThresholdGUI:
         self._add_entry(linha5, "figure_height", "Altura px", "1080")
         self._add_entry(linha5, "figure_dpi", "DPI", "100")
 
+        self.btn_toggle_threshold_filters = ttk.Button(
+            frame_params,
+            text="Mostrar filtros extras",
+            command=self._toggle_threshold_filters,
+        )
+        self.btn_toggle_threshold_filters.pack(fill="x", pady=(8, 4))
+
         self.frame_filtros_extras = ttk.LabelFrame(frame_params, text="Filtros extras (opcional)", padding=8)
 
         linha_fx1 = ttk.Frame(self.frame_filtros_extras)
@@ -285,7 +341,9 @@ class AppThresholdGUI:
         self._add_entry(linha_fx2, "clahe_clip", "CLAHE clip", "2.0")
         self._add_entry(linha_fx2, "clahe_tile", "CLAHE tile", "8")
 
-        frame_acoes = ttk.Frame(self.tab_threshold, padding=10)
+        self._threshold_filters_visible = False
+
+        frame_acoes = ttk.Frame(self.threshold_content, padding=10)
         frame_acoes.pack(fill="x")
 
         ttk.Button(frame_acoes, text="Processar selecionada", command=self.processar_selecionada).pack(side="left")
@@ -295,7 +353,7 @@ class AppThresholdGUI:
         self.progress.pack(side="left", padx=10)
 
         self.status = tk.StringVar(value="Pronto.")
-        ttk.Label(self.tab_threshold, textvariable=self.status, relief="sunken", anchor="w").pack(
+        ttk.Label(self.threshold_content, textvariable=self.status, relief="sunken", anchor="w").pack(
             fill="x", side="bottom", ipady=4
         )
 
@@ -303,14 +361,14 @@ class AppThresholdGUI:
         self._build_video_tab()
 
     def _build_video_tab(self) -> None:
-        topo = ttk.Frame(self.tab_video, padding=10)
+        topo = ttk.Frame(self.video_content, padding=10)
         topo.pack(fill="x")
 
         ttk.Button(topo, text="Selecionar video", command=self.selecionar_video).pack(side="left")
         ttk.Button(topo, text="Selecionar pasta saida", command=self.selecionar_video_output_dir).pack(side="left", padx=8)
         ttk.Button(topo, text="Processar video", command=self.processar_video_gui).pack(side="left", padx=8)
 
-        params = ttk.LabelFrame(self.tab_video, text="Arquivo e Output", padding=10)
+        params = ttk.LabelFrame(self.video_content, text="Arquivo e Output", padding=10)
         params.pack(fill="x", padx=10, pady=(0, 10))
 
         l1 = ttk.Frame(params)
@@ -325,7 +383,7 @@ class AppThresholdGUI:
         ttk.Checkbutton(l2, text="Mostrar preview (q para sair)", variable=self.var_video_show_preview).pack(side="left", padx=10)
 
         # Metodos threshold
-        frame_metodos = ttk.LabelFrame(self.tab_video, text="Thresholds a aplicar", padding=8)
+        frame_metodos = ttk.LabelFrame(self.video_content, text="Thresholds a aplicar", padding=8)
         frame_metodos.pack(fill="x", padx=10, pady=(0, 10))
 
         botoes_metodos = ttk.Frame(frame_metodos)
@@ -351,7 +409,7 @@ class AppThresholdGUI:
             ttk.Checkbutton(grid_metodos, text=label, variable=self.video_method_vars[key]).grid(row=i // 5, column=i % 5, sticky="w", padx=6, pady=2)
 
         # Parametros
-        frame_params = ttk.LabelFrame(self.tab_video, text="Parametros de Threshold", padding=10)
+        frame_params = ttk.LabelFrame(self.video_content, text="Parametros de Threshold", padding=10)
         frame_params.pack(fill="x", padx=10, pady=(0, 10))
 
         linha1 = ttk.Frame(frame_params)
@@ -411,14 +469,22 @@ class AppThresholdGUI:
         self._add_video_entry(linha4, "k", "k estatistico", "0.5")
         self._add_video_entry(linha4, "stat_window", "Janela estat", "31")
 
+        self.btn_toggle_video_filters = ttk.Button(
+            frame_params,
+            text="Mostrar filtros extras do vídeo",
+            command=self._toggle_video_filters,
+        )
+        self.btn_toggle_video_filters.pack(fill="x", pady=(8, 4))
+
         # Filtros extras
-        linha_fx1 = ttk.Frame(frame_params)
+        self.frame_video_filters = ttk.Frame(frame_params)
+        linha_fx1 = ttk.Frame(self.frame_video_filters)
         linha_fx1.pack(fill="x", pady=2)
         ttk.Checkbutton(linha_fx1, text="Pre-processar", variable=self.var_video_preprocess).pack(side="left")
         ttk.Checkbutton(linha_fx1, text="Equalizar histograma", variable=self.var_video_equalize).pack(side="left", padx=10)
         ttk.Checkbutton(linha_fx1, text="CLAHE", variable=self.var_video_clahe).pack(side="left", padx=10)
 
-        linha_fx2 = ttk.Frame(frame_params)
+        linha_fx2 = ttk.Frame(self.frame_video_filters)
         linha_fx2.pack(fill="x", pady=2)
         ttk.Label(linha_fx2, text="Blur:").pack(side="left")
         ttk.Combobox(
@@ -432,11 +498,13 @@ class AppThresholdGUI:
         self._add_video_entry(linha_fx2, "clahe_clip", "CLAHE clip", "2.0")
         self._add_video_entry(linha_fx2, "clahe_tile", "CLAHE tile", "8")
 
-        self.progress_video = ttk.Progressbar(self.tab_video, orient="horizontal", mode="determinate")
+        self._video_filters_visible = False
+
+        self.progress_video = ttk.Progressbar(self.video_content, orient="horizontal", mode="determinate")
         self.progress_video.pack(fill="x", padx=10, pady=(0, 10))
 
         self.status_video = tk.StringVar(value="Selecione um video para iniciar.")
-        ttk.Label(self.tab_video, textvariable=self.status_video, relief="sunken", anchor="w").pack(fill="x", side="bottom", ipady=4)
+        ttk.Label(self.video_content, textvariable=self.status_video, relief="sunken", anchor="w").pack(fill="x", side="bottom", ipady=4)
 
     def selecionar_video(self) -> None:
         caminho = filedialog.askopenfilename(
@@ -615,6 +683,46 @@ class AppThresholdGUI:
         """Retorna conjunto de métodos de vídeo selecionados."""
         return {nome for nome, var in self.video_method_vars.items() if var.get()}
 
+    def _toggle_threshold_filters(self) -> None:
+        self._threshold_filters_visible = self._toggle_section(
+            self.frame_filtros_extras,
+            self.btn_toggle_threshold_filters,
+            "Mostrar filtros extras",
+            "Ocultar filtros extras",
+            self._threshold_filters_visible,
+            {"fill": "x", "pady": (8, 4)},
+        )
+
+    def _toggle_color_filters(self) -> None:
+        self._color_filters_visible = self._toggle_section(
+            self.frame_filtros_cor,
+            self.btn_toggle_color_filters,
+            "Mostrar filtros da troca de cor",
+            "Ocultar filtros da troca de cor",
+            self._color_filters_visible,
+            {"fill": "x", "pady": (8, 2)},
+        )
+
+    def _toggle_overflow_filters(self) -> None:
+        self._overflow_filters_visible = self._toggle_section(
+            self.frame_filtros_overflow,
+            self.btn_toggle_overflow_filters,
+            "Mostrar filtros do Memory Overflow",
+            "Ocultar filtros do Memory Overflow",
+            self._overflow_filters_visible,
+            {"fill": "x", "pady": (2, 8)},
+        )
+
+    def _toggle_video_filters(self) -> None:
+        self._video_filters_visible = self._toggle_section(
+            self.frame_video_filters,
+            self.btn_toggle_video_filters,
+            "Mostrar filtros extras do vídeo",
+            "Ocultar filtros extras do vídeo",
+            self._video_filters_visible,
+            {"fill": "x", "pady": (2, 10)},
+        )
+
     def _ler_parametros_video(self) -> dict:
         """Lê e valida parâmetros do vídeo."""
         try:
@@ -663,7 +771,7 @@ class AppThresholdGUI:
         return params
 
     def _build_color_tab(self) -> None:
-        topo = ttk.Frame(self.tab_cor, padding=10)
+        topo = ttk.Frame(self.cor_content, padding=10)
         topo.pack(fill="x")
 
         ttk.Button(topo, text="Selecionar imagem", command=self.selecionar_imagem_cor).pack(side="left")
@@ -714,7 +822,7 @@ class AppThresholdGUI:
             "saturacao": tk.IntVar(value=500),
         }
 
-        params = ttk.LabelFrame(self.tab_cor, text="Parametros da troca de cor principal", padding=10)
+        params = ttk.LabelFrame(self.cor_content, text="Parametros da troca de cor principal", padding=10)
         params.pack(fill="x", padx=10, pady=(0, 10))
 
         linha1 = ttk.Frame(params)
@@ -789,11 +897,17 @@ class AppThresholdGUI:
         ).pack(side="left", padx=6)
         ttk.Label(linha3, textvariable=self.var_overflow_intensidade, width=4).pack(side="left")
 
+        self.btn_toggle_color_filters = ttk.Button(
+            params,
+            text="Mostrar filtros da troca de cor",
+            command=self._toggle_color_filters,
+        )
+        self.btn_toggle_color_filters.pack(fill="x", pady=(8, 4))
+
         # Filtros para troca de cor
-        linha_filtros_cor = ttk.LabelFrame(params, text="Filtros na troca de cor", padding=8)
-        linha_filtros_cor.pack(fill="x", pady=(8, 2))
+        self.frame_filtros_cor = ttk.LabelFrame(params, text="Filtros na troca de cor", padding=8)
         for nome_filtro, var in self.filtros_cor_vars.items():
-            linha = ttk.Frame(linha_filtros_cor)
+            linha = ttk.Frame(self.frame_filtros_cor)
             linha.pack(fill="x", pady=2)
             ttk.Checkbutton(linha, text=nome_filtro.replace("_", " ").title(), variable=var).pack(side="left")
             ttk.Label(linha, text="0-1000%").pack(side="left", padx=(10, 4))
@@ -807,11 +921,17 @@ class AppThresholdGUI:
             ).pack(side="left", padx=6)
             ttk.Label(linha, textvariable=self.filtros_cor_intensidades[nome_filtro], width=5).pack(side="left")
 
+        self.btn_toggle_overflow_filters = ttk.Button(
+            params,
+            text="Mostrar filtros do Memory Overflow",
+            command=self._toggle_overflow_filters,
+        )
+        self.btn_toggle_overflow_filters.pack(fill="x", pady=(8, 4))
+
         # Filtros para memory overflow
-        linha_filtros_overflow = ttk.LabelFrame(params, text="Filtros no Memory Overflow", padding=8)
-        linha_filtros_overflow.pack(fill="x", pady=(2, 8))
+        self.frame_filtros_overflow = ttk.LabelFrame(params, text="Filtros no Memory Overflow", padding=8)
         for nome_filtro, var in self.filtros_overflow_vars.items():
-            linha = ttk.Frame(linha_filtros_overflow)
+            linha = ttk.Frame(self.frame_filtros_overflow)
             linha.pack(fill="x", pady=2)
             ttk.Checkbutton(linha, text=nome_filtro.replace("_", " ").title(), variable=var).pack(side="left")
             ttk.Label(linha, text="0-1000%").pack(side="left", padx=(10, 4))
@@ -825,7 +945,7 @@ class AppThresholdGUI:
             ).pack(side="left", padx=6)
             ttk.Label(linha, textvariable=self.filtros_overflow_intensidades[nome_filtro], width=5).pack(side="left")
 
-        prev = ttk.LabelFrame(self.tab_cor, text="Preview troca de cor", padding=10)
+        prev = ttk.LabelFrame(self.cor_content, text="Preview troca de cor", padding=10)
         prev.pack(fill="both", expand=True, padx=10, pady=(0, 10))
 
         self.lbl_cor_original = ttk.Label(prev, text="Original", anchor="center")
@@ -841,7 +961,10 @@ class AppThresholdGUI:
         prev.columnconfigure(1, weight=1)
 
         self.status_cor = tk.StringVar(value="Selecione uma imagem para troca de cor principal.")
-        ttk.Label(self.tab_cor, textvariable=self.status_cor, relief="sunken", anchor="w").pack(fill="x", side="bottom", ipady=4)
+        ttk.Label(self.cor_content, textvariable=self.status_cor, relief="sunken", anchor="w").pack(fill="x", side="bottom", ipady=4)
+
+        self._color_filters_visible = False
+        self._overflow_filters_visible = False
 
         self.var_cor_origem.trace_add("write", lambda *_: self._on_cor_param_change())
         self.var_cor_destino.trace_add("write", lambda *_: self._on_cor_param_change())
