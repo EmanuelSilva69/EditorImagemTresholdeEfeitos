@@ -76,6 +76,57 @@ def shift_color(
     return _to_bgr_uint8(out_rgb), meta
 
 
+def _aplicar_blur_progressivo(img: np.ndarray, kernel_size: int) -> np.ndarray:
+    """Aplica blur Gaussiano progressivo."""
+    if kernel_size < 3:
+        return img
+    kernel_size = kernel_size if kernel_size % 2 == 1 else kernel_size + 1
+    return cv2.GaussianBlur(img, (kernel_size, kernel_size), 0)
+
+
+def _aplicar_rotacao_suave(img: np.ndarray, angle: float) -> np.ndarray:
+    """Aplica rotação suave ao redor do centro."""
+    h, w = img.shape[:2]
+    center = (w // 2, h // 2)
+    matrix = cv2.getRotationMatrix2D(center, angle, 1.0)
+    return cv2.warpAffine(img, matrix, (w, h), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT)
+
+
+def _aplicar_distorcao_onda(img: np.ndarray, amplitude: float = 5.0) -> np.ndarray:
+    """Aplica distorção tipo onda ao sinal."""
+    h, w = img.shape[:2]
+    x = np.arange(w)
+    y = np.arange(h)
+    xx, yy = np.meshgrid(x, y)
+    
+    # Cria ondas senoidais
+    offset_x = (amplitude * np.sin(2 * np.pi * yy / h)).astype(np.float32)
+    offset_y = (amplitude * np.cos(2 * np.pi * xx / w)).astype(np.float32)
+    
+    xx_new = (xx + offset_x).astype(np.float32)
+    yy_new = (yy + offset_y).astype(np.float32)
+    
+    xx_new = np.clip(xx_new, 0, w - 1)
+    yy_new = np.clip(yy_new, 0, h - 1)
+    
+    return cv2.remap(img, xx_new, yy_new, cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT)
+
+
+def _aplicar_brilho_contraste(img: np.ndarray, brilho: float, contraste: float) -> np.ndarray:
+    """Ajusta brilho e contraste."""
+    img_f = img.astype(np.float32) / 255.0
+    img_f = img_f * contraste + brilho
+    img_f = np.clip(img_f, 0, 1) * 255.0
+    return img_f.astype(np.uint8)
+
+
+def _aplicar_saturacao(img: np.ndarray, saturacao: float) -> np.ndarray:
+    """Ajusta saturação da imagem."""
+    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV).astype(np.float32)
+    hsv[:, :, 1] = np.clip(hsv[:, :, 1] * saturacao, 0, 255)
+    return cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR)
+
+
 def memory_overflow_glitch(
     image_bgr: np.ndarray,
     intensity: int = 8,
@@ -84,7 +135,13 @@ def memory_overflow_glitch(
     seed: Optional[int] = None,
 ) -> np.ndarray:
     """
-    Simula efeito de estouro de memoria com composicao de janelas recursivas.
+    Simula efeito de estouro de memoria com pirâmide invertida e múltiplos efeitos.
+    
+    Cria uma composição em pirâmide com a imagem menor em cima, aplicando:
+    - Mudanças de cor progressivas
+    - Blur e rotação
+    - Distorção tipo onda
+    - Variações de brilho, contraste e saturação
     """
     rng = np.random.default_rng(seed)
     intensity = max(1, int(intensity))
@@ -95,12 +152,16 @@ def memory_overflow_glitch(
     canvas = image_bgr.astype(np.float32).copy()
     base = image_bgr.copy()
 
+    # Cria pirâmide invertida (menor em cima, maior embaixo)
+    layers = []
     for i in range(intensity):
         scale = scale_decay ** i
-        rw = max(24, int(w * scale))
-        rh = max(24, int(h * scale))
-        resized = cv2.resize(base, (rw, rh), interpolation=cv2.INTER_AREA)
+        new_w = max(24, int(w * scale))
+        new_h = max(24, int(h * scale))
+        resized = cv2.resize(base, (new_w, new_h), interpolation=cv2.INTER_AREA)
 
+        # Aplica múltiplos efeitos
+        # 1. Mudança de cor
         hue_src = float((i * 23) % 180)
         hue_dst = float((hue_src + rng.integers(30, 110)) % 180)
         recolored, _ = shift_color(
@@ -111,15 +172,50 @@ def memory_overflow_glitch(
             feather=16,
         )
 
+        # 2. Blur progressivo aumentando a cada camada
+        blur_kernel = 3 + i * 2
+        blurred = _aplicar_blur_progressivo(recolored, blur_kernel)
+
+        # 3. Rotação suave
+        angle = rng.uniform(-12, 12)
+        rotated = _aplicar_rotacao_suave(blurred, angle)
+
+        # 4. Distorção tipo onda
+        distorted = _aplicar_distorcao_onda(rotated, amplitude=2.0 + i * 1.5)
+
+        # 5. Brilho, contraste e saturação
+        brightness = rng.uniform(-0.1, 0.15)
+        contrast = rng.uniform(0.7, 1.3)
+        saturation = rng.uniform(0.6, 1.4)
+        adjusted = _aplicar_brilho_contraste(distorted, brightness, contrast)
+        adjusted = _aplicar_saturacao(adjusted, saturation)
+
+        layers.append({
+            "image": adjusted,
+            "width": new_w,
+            "height": new_h,
+            "layer_index": i,
+        })
+
+    # Composição em pirâmide invertida (menores em cima/centro)
+    for layer_data in layers:
+        layer_img = layer_data["image"]
+        lw = layer_data["width"]
+        lh = layer_data["height"]
+        layer_idx = layer_data["layer_index"]
+
+        # Posiciona em torno do centro com leve jitter
         cx = w // 2 + int(rng.integers(-jitter, jitter + 1))
         cy = h // 2 + int(rng.integers(-jitter, jitter + 1))
-        x0 = int(np.clip(cx - rw // 2, 0, max(0, w - rw)))
-        y0 = int(np.clip(cy - rh // 2, 0, max(0, h - rh)))
+        x0 = int(np.clip(cx - lw // 2, 0, max(0, w - lw)))
+        y0 = int(np.clip(cy - lh // 2, 0, max(0, h - lh)))
 
-        alpha = max(0.14, 0.65 - i * 0.055)
-        roi = canvas[y0 : y0 + rh, x0 : x0 + rw]
-        layer = recolored.astype(np.float32)
-        canvas[y0 : y0 + rh, x0 : x0 + rw] = roi * (1.0 - alpha) + layer * alpha
+        # Transparência aumenta conforme desce a pirâmide
+        alpha = max(0.10, 0.70 - layer_idx * 0.065)
+        
+        roi = canvas[y0 : y0 + lh, x0 : x0 + lw]
+        layer = layer_img.astype(np.float32)
+        canvas[y0 : y0 + lh, x0 : x0 + lw] = roi * (1.0 - alpha) + layer * (alpha)
 
     return np.clip(canvas, 0, 255).astype(np.uint8)
 
