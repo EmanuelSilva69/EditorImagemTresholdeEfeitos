@@ -127,9 +127,86 @@ def _aplicar_saturacao(img: np.ndarray, saturacao: float) -> np.ndarray:
     return cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR)
 
 
+def _aplicar_negativo(img: np.ndarray, intensidade: float) -> np.ndarray:
+    """Mistura a imagem com sua inversão cromática."""
+    alpha = float(np.clip(intensidade, 0.0, 1.0))
+    base = img.astype(np.float32)
+    invertida = 255.0 - base
+    return np.clip(base * (1.0 - alpha) + invertida * alpha, 0, 255).astype(np.uint8)
+
+
+def _aplicar_polarizador(img: np.ndarray, intensidade: float) -> np.ndarray:
+    """Cria um efeito de polarização com mais contraste e saturação local."""
+    alpha = float(np.clip(intensidade, 0.0, 1.0))
+    if alpha <= 0.0:
+        return img
+
+    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV).astype(np.float32)
+    hsv[:, :, 1] = np.clip(hsv[:, :, 1] * (1.0 + 0.9 * alpha), 0, 255)
+    hsv[:, :, 2] = np.clip(hsv[:, :, 2] * (1.0 - 0.2 * alpha), 0, 255)
+    polar = cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR).astype(np.float32)
+
+    h, w = img.shape[:2]
+    grad_x = np.linspace(0.88, 1.12, w, dtype=np.float32)[None, :]
+    grad_y = (0.94 + 0.06 * np.cos(np.linspace(0.0, np.pi * 2.0, h, dtype=np.float32)))[:, None]
+    mascara = np.clip(grad_x * grad_y, 0.75, 1.15)
+    polar *= mascara[..., None]
+    return np.clip(polar, 0, 255).astype(np.uint8)
+
+
+def _aplicar_sepia(img: np.ndarray, intensidade: float) -> np.ndarray:
+    """Aplica um tom sépia com mistura gradual."""
+    alpha = float(np.clip(intensidade, 0.0, 1.0))
+    if alpha <= 0.0:
+        return img
+
+    kernel = np.array(
+        [
+            [0.131, 0.534, 0.272],
+            [0.168, 0.686, 0.349],
+            [0.189, 0.769, 0.393],
+        ],
+        dtype=np.float32,
+    )
+    sepia = cv2.transform(img.astype(np.float32), kernel)
+    return np.clip(img.astype(np.float32) * (1.0 - alpha) + sepia * alpha, 0, 255).astype(np.uint8)
+
+
+def _aplicar_nitidez(img: np.ndarray, intensidade: float) -> np.ndarray:
+    """Realça bordas e microcontraste."""
+    alpha = float(np.clip(intensidade, 0.0, 1.0))
+    if alpha <= 0.0:
+        return img
+
+    kernel = np.array(
+        [[0.0, -1.0, 0.0], [-1.0, 5.0, -1.0], [0.0, -1.0, 0.0]],
+        dtype=np.float32,
+    )
+    sharp = cv2.filter2D(img, -1, kernel)
+    return np.clip(img.astype(np.float32) * (1.0 - alpha) + sharp.astype(np.float32) * alpha, 0, 255).astype(np.uint8)
+
+
+def _aplicar_posterizacao(img: np.ndarray, intensidade: float) -> np.ndarray:
+    """Reduz a quantidade de níveis de cor para um visual mais bruto."""
+    alpha = float(np.clip(intensidade, 0.0, 1.0))
+    if alpha <= 0.0:
+        return img
+
+    niveis = int(np.clip(round(32 - 26 * alpha), 2, 32))
+    passo = 256.0 / float(niveis)
+    base = img.astype(np.float32)
+    poster = np.floor(base / passo) * passo + (passo / 2.0)
+    return np.clip(base * (1.0 - alpha) + poster * alpha, 0, 255).astype(np.uint8)
+
+
 def _escala_efeito(percentual: float) -> float:
     """Converte um slider de 0 a 1000% em multiplicador prático."""
     return max(0.0, float(percentual) / 100.0)
+
+
+def _intensidade_mistura(percentual: float, divisor: float = 4.0) -> float:
+    """Normaliza um slider percentual para efeitos de mistura entre 0 e 1."""
+    return float(np.clip(_escala_efeito(percentual) / float(divisor), 0.0, 1.0))
 
 
 def _blend_mascarado(base: np.ndarray, efeito: np.ndarray, mascara: np.ndarray, alpha: float) -> np.ndarray:
@@ -164,10 +241,11 @@ def aplicar_filtros_selecionados(
     """
     Aplica filtros selecionados à imagem.
     
-    Filtros disponíveis: 'blur', 'rotacao', 'onda', 'brilho_contraste', 'saturacao'
+    Filtros disponíveis: 'blur', 'rotacao', 'onda', 'brilho_contraste', 'saturacao',
+    'negativo', 'polarizador', 'sepia', 'nitidez', 'posterizar'
     """
     if filtros is None:
-        filtros = {"blur", "rotacao", "onda", "brilho_contraste", "saturacao"}
+        filtros = {"blur", "rotacao", "onda", "brilho_contraste", "saturacao", "negativo", "polarizador", "sepia", "nitidez", "posterizar"}
     if intensidades is None:
         intensidades = {}
     
@@ -179,6 +257,11 @@ def aplicar_filtros_selecionados(
     intensidade_onda = _escala_efeito(intensidades.get("onda", 100.0))
     intensidade_bc = _escala_efeito(intensidades.get("brilho_contraste", 100.0))
     intensidade_sat = _escala_efeito(intensidades.get("saturacao", 100.0))
+    intensidade_negativo = _intensidade_mistura(intensidades.get("negativo", 100.0))
+    intensidade_polarizador = _intensidade_mistura(intensidades.get("polarizador", 100.0))
+    intensidade_sepia = _intensidade_mistura(intensidades.get("sepia", 100.0))
+    intensidade_nitidez = _intensidade_mistura(intensidades.get("nitidez", 100.0))
+    intensidade_posterizar = _intensidade_mistura(intensidades.get("posterizar", 100.0))
     
     if "blur" in filtros:
         kernel = int(max(1, blur_kernel * intensidade_blur))
@@ -201,6 +284,21 @@ def aplicar_filtros_selecionados(
     
     if "saturacao" in filtros:
         result = _aplicar_saturacao(result, 1.0 + (saturacao - 1.0) * intensidade_sat)
+
+    if "polarizador" in filtros:
+        result = _aplicar_polarizador(result, intensidade_polarizador)
+
+    if "sepia" in filtros:
+        result = _aplicar_sepia(result, intensidade_sepia)
+
+    if "nitidez" in filtros:
+        result = _aplicar_nitidez(result, intensidade_nitidez)
+
+    if "posterizar" in filtros:
+        result = _aplicar_posterizacao(result, intensidade_posterizar)
+
+    if "negativo" in filtros:
+        result = _aplicar_negativo(result, intensidade_negativo)
     
     return result
 
@@ -227,7 +325,7 @@ def memory_overflow_glitch(
               {'blur', 'rotacao', 'onda', 'brilho_contraste', 'saturacao'}
     """
     if filtros is None:
-        filtros = {"blur", "rotacao", "onda", "brilho_contraste", "saturacao"}
+        filtros = {"blur", "rotacao", "onda", "brilho_contraste", "saturacao", "negativo", "polarizador", "sepia", "nitidez", "posterizar"}
     if intensidades is None:
         intensidades = {}
     

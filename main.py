@@ -41,6 +41,8 @@ class AppThresholdGUI:
         self.preview_color_images: list[ImageTk.PhotoImage] = []
         self.caminho_cor: str = ""
         self.modo_preview_cor: str = "troca"
+        self._preview_cor_after_id = None
+        self._ultima_preview_cor_bgr: np.ndarray | None = None
 
         self._build_ui()
 
@@ -80,6 +82,15 @@ class AppThresholdGUI:
         frame.pack(**pack_kwargs)
         button.configure(text=shown_text)
         return True
+
+    def _schedule_preview_cor_refresh(self, *_args: object) -> None:
+        if self._preview_cor_after_id is not None:
+            self.root.after_cancel(self._preview_cor_after_id)
+        self._preview_cor_after_id = self.root.after(90, self._refresh_preview_cor_now)
+
+    def _refresh_preview_cor_now(self) -> None:
+        self._preview_cor_after_id = None
+        self._atualizar_preview_cor()
 
     def _build_ui(self) -> None:
         self.tabs = ttk.Notebook(self.root)
@@ -776,6 +787,7 @@ class AppThresholdGUI:
 
         ttk.Button(topo, text="Selecionar imagem", command=self.selecionar_imagem_cor).pack(side="left")
         ttk.Button(topo, text="Selecionar output folder", command=self.selecionar_pasta_saida_cor).pack(side="left", padx=8)
+        ttk.Button(topo, text="Salvar imagem atual", command=self.salvar_preview_cor).pack(side="left", padx=8)
         ttk.Button(topo, text="Aplicar troca de cor", command=self.aplicar_troca_cor_principal).pack(side="left", padx=8)
         ttk.Button(topo, text="Aplicar Memory Overflow", command=self.aplicar_memory_overflow).pack(side="left", padx=8)
 
@@ -799,6 +811,11 @@ class AppThresholdGUI:
             "onda": tk.BooleanVar(value=False),
             "brilho_contraste": tk.BooleanVar(value=False),
             "saturacao": tk.BooleanVar(value=True),
+            "negativo": tk.BooleanVar(value=False),
+            "polarizador": tk.BooleanVar(value=False),
+            "sepia": tk.BooleanVar(value=False),
+            "nitidez": tk.BooleanVar(value=False),
+            "posterizar": tk.BooleanVar(value=False),
         }
         self.filtros_cor_intensidades = {
             "blur": tk.IntVar(value=250),
@@ -806,6 +823,11 @@ class AppThresholdGUI:
             "onda": tk.IntVar(value=250),
             "brilho_contraste": tk.IntVar(value=250),
             "saturacao": tk.IntVar(value=250),
+            "negativo": tk.IntVar(value=220),
+            "polarizador": tk.IntVar(value=220),
+            "sepia": tk.IntVar(value=220),
+            "nitidez": tk.IntVar(value=220),
+            "posterizar": tk.IntVar(value=220),
         }
         self.filtros_overflow_vars = {
             "blur": tk.BooleanVar(value=True),
@@ -813,6 +835,11 @@ class AppThresholdGUI:
             "onda": tk.BooleanVar(value=True),
             "brilho_contraste": tk.BooleanVar(value=True),
             "saturacao": tk.BooleanVar(value=True),
+            "negativo": tk.BooleanVar(value=True),
+            "polarizador": tk.BooleanVar(value=True),
+            "sepia": tk.BooleanVar(value=True),
+            "nitidez": tk.BooleanVar(value=True),
+            "posterizar": tk.BooleanVar(value=True),
         }
         self.filtros_overflow_intensidades = {
             "blur": tk.IntVar(value=500),
@@ -820,6 +847,11 @@ class AppThresholdGUI:
             "onda": tk.IntVar(value=500),
             "brilho_contraste": tk.IntVar(value=500),
             "saturacao": tk.IntVar(value=500),
+            "negativo": tk.IntVar(value=500),
+            "polarizador": tk.IntVar(value=500),
+            "sepia": tk.IntVar(value=500),
+            "nitidez": tk.IntVar(value=500),
+            "posterizar": tk.IntVar(value=500),
         }
 
         params = ttk.LabelFrame(self.cor_content, text="Parametros da troca de cor principal", padding=10)
@@ -976,9 +1008,17 @@ class AppThresholdGUI:
         self.var_hue_origem.trace_add("write", lambda *_: self._on_cor_param_change())
         self.var_hue_destino.trace_add("write", lambda *_: self._on_cor_param_change())
 
+        for var in (
+            list(self.filtros_cor_vars.values())
+            + list(self.filtros_cor_intensidades.values())
+            + list(self.filtros_overflow_vars.values())
+            + list(self.filtros_overflow_intensidades.values())
+        ):
+            var.trace_add("write", lambda *_: self._schedule_preview_cor_refresh())
+
     def _on_cor_param_change(self) -> None:
         if self.caminho_cor:
-            self._atualizar_preview_cor()
+            self._schedule_preview_cor_refresh()
 
     def selecionar_imagem_cor(self) -> None:
         caminho = filedialog.askopenfilename(
@@ -1051,6 +1091,43 @@ class AppThresholdGUI:
         meta["modo_destino"] = "rgb_picker" if self.var_use_rgb_picker.get() else ("slider" if self.var_use_hue_sliders.get() else "combobox")
         return saida_bgr, meta
 
+    def _salvar_preview_atual(self, saida_bgr: np.ndarray, sufixo: str) -> str:
+        dir_saida = self.var_cor_output_dir.get().strip() or "../resultados/img_colorida"
+        return salvar_troca_cor(
+            self.caminho_cor,
+            saida_bgr,
+            dir_saida,
+            sufixo=sufixo,
+        )
+
+    def salvar_preview_cor(self) -> None:
+        if not self.caminho_cor:
+            messagebox.showwarning("Aviso", "Selecione uma imagem na aba Troca de Cor.")
+            return
+
+        self._refresh_preview_cor_now()
+
+        if self._ultima_preview_cor_bgr is None:
+            messagebox.showerror("Erro", "Nao foi possivel salvar a imagem atual.")
+            return
+
+        if self.modo_preview_cor == "overflow":
+            filtros_selecionados = {nome for nome, var in self.filtros_overflow_vars.items() if var.get()}
+            filtros_str = "_".join(sorted(filtros_selecionados)) if filtros_selecionados else "default"
+            caminho_saida = self._salvar_preview_atual(
+                self._ultima_preview_cor_bgr,
+                sufixo=f"preview_memory_overflow_i{int(self.var_overflow_intensidade.get())}_f{filtros_str}",
+            )
+        else:
+            filtros_selecionados = {nome for nome, var in self.filtros_cor_vars.items() if var.get()}
+            filtros_str = "_".join(sorted(filtros_selecionados)) if filtros_selecionados else "sem_filtros"
+            caminho_saida = self._salvar_preview_atual(
+                self._ultima_preview_cor_bgr,
+                sufixo=f"preview_troca_cor_{filtros_str}",
+            )
+
+        self.status_cor.set(f"Imagem salva em: {caminho_saida}")
+
     def _atualizar_preview_cor(self) -> None:
         if not self.caminho_cor:
             return
@@ -1077,6 +1154,7 @@ class AppThresholdGUI:
 
         orig_rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
         res_rgb = cv2.cvtColor(saida_bgr, cv2.COLOR_BGR2RGB)
+        self._ultima_preview_cor_bgr = saida_bgr.copy()
         t1 = self._imagem_para_thumbnail(orig_rgb, largura=360, altura=260)
         t2 = self._imagem_para_thumbnail(res_rgb, largura=360, altura=260)
         self.preview_color_images = [t1, t2]
@@ -1111,7 +1189,7 @@ class AppThresholdGUI:
             self.status_cor.set(
                 f"Troca aplicada. Origem hue={meta['source_hue']:.1f}, destino hue={meta['target_hue']:.1f}. Salvo em: {caminho_saida}"
             )
-            self._atualizar_preview_cor()
+            self._refresh_preview_cor_now()
         except Exception as exc:
             messagebox.showerror("Erro", str(exc))
             self.status_cor.set("Erro ao aplicar troca de cor principal.")
@@ -1153,7 +1231,7 @@ class AppThresholdGUI:
             self.status_cor.set(
                 f"Memory Overflow aplicado (intensidade={int(self.var_overflow_intensidade.get())}, filtros={filtros_str}). Salvo em: {caminho_saida}"
             )
-            self._atualizar_preview_cor()
+            self._refresh_preview_cor_now()
         except Exception as exc:
             messagebox.showerror("Erro", str(exc))
             self.status_cor.set("Erro ao aplicar Memory Overflow.")
