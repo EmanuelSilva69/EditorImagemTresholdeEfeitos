@@ -129,3 +129,6 @@ Na aba `Troca de Cor`:
 ## Observacao
 
 No modo video, pressione `q` para encerrar a visualizacao em tempo real.
+
+<img width="1920" height="1080" alt="image" src="https://github.com/user-attachments/assets/1bfea3a8-eac5-47d8-ae3c-95d268e3f541" />
+
