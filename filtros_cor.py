@@ -127,9 +127,32 @@ def _aplicar_saturacao(img: np.ndarray, saturacao: float) -> np.ndarray:
     return cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR)
 
 
+def _escala_efeito(percentual: float) -> float:
+    """Converte um slider de 0 a 1000% em multiplicador prático."""
+    return max(0.0, float(percentual) / 100.0)
+
+
+def _blend_mascarado(base: np.ndarray, efeito: np.ndarray, mascara: np.ndarray, alpha: float) -> np.ndarray:
+    """Mistura o efeito apenas onde a mascara está ativa."""
+    mascara_f = np.clip(mascara.astype(np.float32), 0.0, 1.0)[..., None]
+    alpha_f = np.clip(float(alpha), 0.0, 1.0)
+    return base * (1.0 - mascara_f * alpha_f) + efeito * (mascara_f * alpha_f)
+
+
+def recortar_centro(image_bgr: np.ndarray, largura: int, altura: int) -> np.ndarray:
+    """Recorta a imagem pelo centro sem preencher bordas."""
+    h, w = image_bgr.shape[:2]
+    largura = min(max(1, int(largura)), w)
+    altura = min(max(1, int(altura)), h)
+    x0 = max(0, (w - largura) // 2)
+    y0 = max(0, (h - altura) // 2)
+    return image_bgr[y0:y0 + altura, x0:x0 + largura].copy()
+
+
 def aplicar_filtros_selecionados(
     image_bgr: np.ndarray,
     filtros: Optional[Set[str]] = None,
+    intensidades: Optional[Dict[str, float]] = None,
     blur_kernel: int = 5,
     rotacao_angle: float = 15.0,
     onda_amplitude: float = 5.0,
@@ -145,25 +168,39 @@ def aplicar_filtros_selecionados(
     """
     if filtros is None:
         filtros = {"blur", "rotacao", "onda", "brilho_contraste", "saturacao"}
+    if intensidades is None:
+        intensidades = {}
     
     rng = np.random.default_rng(seed)
     result = image_bgr.copy()
+
+    intensidade_blur = _escala_efeito(intensidades.get("blur", 100.0))
+    intensidade_rotacao = _escala_efeito(intensidades.get("rotacao", 100.0))
+    intensidade_onda = _escala_efeito(intensidades.get("onda", 100.0))
+    intensidade_bc = _escala_efeito(intensidades.get("brilho_contraste", 100.0))
+    intensidade_sat = _escala_efeito(intensidades.get("saturacao", 100.0))
     
     if "blur" in filtros:
-        result = _aplicar_blur_progressivo(result, blur_kernel)
+        kernel = int(max(1, blur_kernel * intensidade_blur))
+        if kernel >= 3:
+            result = _aplicar_blur_progressivo(result, kernel)
     
     if "rotacao" in filtros:
-        angle = rng.uniform(-rotacao_angle, rotacao_angle)
+        angle = rng.uniform(-rotacao_angle, rotacao_angle) * intensidade_rotacao
         result = _aplicar_rotacao_suave(result, angle)
     
     if "onda" in filtros:
-        result = _aplicar_distorcao_onda(result, amplitude=onda_amplitude)
+        result = _aplicar_distorcao_onda(result, amplitude=onda_amplitude * intensidade_onda)
     
     if "brilho_contraste" in filtros:
-        result = _aplicar_brilho_contraste(result, brilho, contraste)
+        result = _aplicar_brilho_contraste(
+            result,
+            brilho * intensidade_bc,
+            1.0 + (contraste - 1.0) * intensidade_bc,
+        )
     
     if "saturacao" in filtros:
-        result = _aplicar_saturacao(result, saturacao)
+        result = _aplicar_saturacao(result, 1.0 + (saturacao - 1.0) * intensidade_sat)
     
     return result
 
@@ -174,6 +211,7 @@ def memory_overflow_glitch(
     scale_decay: float = 0.82,
     jitter: int = 28,
     filtros: Optional[Set[str]] = None,
+    intensidades: Optional[Dict[str, float]] = None,
     seed: Optional[int] = None,
 ) -> np.ndarray:
     """
@@ -190,39 +228,28 @@ def memory_overflow_glitch(
     """
     if filtros is None:
         filtros = {"blur", "rotacao", "onda", "brilho_contraste", "saturacao"}
+    if intensidades is None:
+        intensidades = {}
     
     rng = np.random.default_rng(seed)
     intensity = max(2, int(intensity))
     scale_decay = float(np.clip(scale_decay, 0.55, 0.95))
     jitter = max(0, int(jitter))
+    intensidade_blur = _escala_efeito(intensidades.get("blur", 100.0))
+    intensidade_rotacao = _escala_efeito(intensidades.get("rotacao", 100.0))
+    intensidade_onda = _escala_efeito(intensidades.get("onda", 100.0))
+    intensidade_bc = _escala_efeito(intensidades.get("brilho_contraste", 100.0))
+    intensidade_sat = _escala_efeito(intensidades.get("saturacao", 100.0))
 
     h, w = image_bgr.shape[:2]
-    
-    # Cria canvas com fundo transparente (sem branco)
-    canvas = np.zeros((h, w, 4), dtype=np.float32)
-    canvas[:, :, 3] = 0  # Alpha channel transparente
     base = image_bgr.copy()
 
-    # Layer 0: Recorta versão pequena da imagem original como base (sem deixar branco)
-    scale_base = 0.45
-    base_w = max(24, int(w * scale_base))
-    base_h = max(24, int(h * scale_base))
-    base_resized = cv2.resize(base, (base_w, base_h), interpolation=cv2.INTER_AREA)
-    
-    # Aplica efeitos suaves na base se selecionado
-    if base_resized.shape[0] > 0 and base_resized.shape[1] > 0:
-        base_colored = aplicar_filtros_selecionados(
-            base_resized,
-            filtros={"blur", "saturacao"},  # Apenas efeitos suaves na base
-            blur_kernel=3,
-            saturacao=rng.uniform(0.8, 1.2),
-            seed=seed,
-        )
-    else:
-        base_colored = base_resized
+    base_crop = recortar_centro(base, max(24, int(w * 0.94)), max(24, int(h * 0.88)))
+    canvas = cv2.resize(base_crop, (w, h), interpolation=cv2.INTER_CUBIC).astype(np.float32)
 
-    # Posiciona base no centro (recortada, sem quadrado branco)
-    y_offset = h - int(base_h * 0.6)
+    overlay_mask = np.zeros((h, w), dtype=np.float32)
+    top_limit = max(1, int(h * 0.72))
+    overlay_mask[:top_limit, :] = np.linspace(1.0, 0.0, top_limit, dtype=np.float32)[:, None]
 
     # Cria camadas em triângulo invertido (menores acima)
     for i in range(1, intensity):
@@ -258,63 +285,29 @@ def memory_overflow_glitch(
             recolored,
             filtros=filtros,
             blur_kernel=blur_k,
-            rotacao_angle=25 * effect_intensity,
-            onda_amplitude=3.0 + i * 4.5,
-            brilho=rng.uniform(-0.25 * effect_intensity, 0.30 * effect_intensity),
-            contraste=rng.uniform(0.5 + effect_intensity * 0.5, 1.5 + effect_intensity * 0.3),
-            saturacao=rng.uniform(0.4 + effect_intensity * 0.5, 1.8),
+            rotacao_angle=25 * effect_intensity * intensidade_rotacao,
+            onda_amplitude=(3.0 + i * 4.5) * intensidade_onda,
+            brilho=rng.uniform(-0.25 * effect_intensity, 0.30 * effect_intensity) * intensidade_bc,
+            contraste=1.0 + (
+                (rng.uniform(0.5 + effect_intensity * 0.5, 1.5 + effect_intensity * 0.3) - 1.0)
+                * intensidade_bc
+            ),
+            saturacao=1.0 + ((rng.uniform(0.4 + effect_intensity * 0.5, 1.8) - 1.0) * intensidade_sat),
             seed=rng.integers(0, 2**31 - 1) if seed else None,
         )
 
-        # Posiciona verticalmente (eixo Y) - sobe conforme aumenta i
+        # Posiciona verticalmente (eixo Y) - fica acima da base e vai subindo
         cx = w // 2 + int(rng.integers(-jitter // 2, jitter // 2 + 1))
         x0 = int(np.clip(cx - new_w // 2, 0, max(0, w - new_w)))
-        
-        # Y desce a cada camada (triângulo invertido)
-        y0 = max(0, int(y_offset - new_h))
-        y_offset = y0
-        
-        # Garante que não sai do canvas
-        if y0 + new_h > h:
-            y0 = max(0, h - new_h)
 
-        # Transparência aumenta conforme sobe
-        alpha = max(0.3, 0.85 - (intensity - i) * 0.08)
-        
-        # Composição sem deixar brancas
-        if y0 + new_h <= h and x0 + new_w <= w:
-            # Cria canal alpha para o filtro
-            filtered_rgba = cv2.cvtColor(filtered, cv2.COLOR_BGR2BGRA)
-            filtered_rgba[:, :, 3] = alpha * 255
-            
-            # Composição com blending adequado
-            roi = canvas[y0 : y0 + new_h, x0 : x0 + new_w]
-            layer_float = filtered.astype(np.float32)
-            
-            if roi[:, :, 3].max() > 0:
-                weight_bg = roi[:, :, 3] / 255.0
-                weight_fg = alpha * np.ones_like(weight_bg)
-                total_weight = weight_bg + weight_fg * (1 - weight_bg)
-                total_weight = np.clip(total_weight, 0.0001, 1.0)
-                
-                for c in range(3):
-                    canvas[y0 : y0 + new_h, x0 : x0 + new_w, c] = (
-                        roi[:, :, c] * weight_bg / total_weight +
-                        layer_float[:, :, 2 - c] * weight_fg * (1 - weight_bg) / total_weight
-                    )
-            else:
-                for c in range(3):
-                    canvas[y0 : y0 + new_h, x0 : x0 + new_w, c] = layer_float[:, :, 2 - c]
-            
-            canvas[y0 : y0 + new_h, x0 : x0 + new_w, 3] = np.clip(
-                canvas[y0 : y0 + new_h, x0 : x0 + new_w, 3] + alpha * 255, 0, 255
-            )
+        y0 = int(np.clip(h - new_h - int((i + 1) * (h / (intensity + 1))), 0, max(0, h - new_h)))
 
-    # Converte de volta para BGR sem contar áreas transparentes
-    # Usa apenas camadas compostas, sem fundo branco
-    result_rgb = canvas[:, :, :3].astype(np.uint8)
-    
-    return np.clip(result_rgb, 0, 255).astype(np.uint8)
+        alpha = max(0.18, 0.92 - (i * 0.07))
+        roi = canvas[y0:y0 + new_h, x0:x0 + new_w]
+        mask = overlay_mask[y0:y0 + new_h, x0:x0 + new_w]
+        canvas[y0:y0 + new_h, x0:x0 + new_w] = _blend_mascarado(roi, filtered.astype(np.float32), mask, alpha)
+
+    return np.clip(canvas, 0, 255).astype(np.uint8)
 
 
 def detectar_hue_principal(h: np.ndarray, s: np.ndarray, v: np.ndarray) -> float:
