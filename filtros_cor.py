@@ -1,5 +1,5 @@
 import os
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Dict, Set
 
 import cv2
 import numpy as np
@@ -127,60 +127,115 @@ def _aplicar_saturacao(img: np.ndarray, saturacao: float) -> np.ndarray:
     return cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR)
 
 
+def aplicar_filtros_selecionados(
+    image_bgr: np.ndarray,
+    filtros: Optional[Set[str]] = None,
+    blur_kernel: int = 5,
+    rotacao_angle: float = 15.0,
+    onda_amplitude: float = 5.0,
+    brilho: float = 0.0,
+    contraste: float = 1.0,
+    saturacao: float = 1.0,
+    seed: Optional[int] = None,
+) -> np.ndarray:
+    """
+    Aplica filtros selecionados à imagem.
+    
+    Filtros disponíveis: 'blur', 'rotacao', 'onda', 'brilho_contraste', 'saturacao'
+    """
+    if filtros is None:
+        filtros = {"blur", "rotacao", "onda", "brilho_contraste", "saturacao"}
+    
+    rng = np.random.default_rng(seed)
+    result = image_bgr.copy()
+    
+    if "blur" in filtros:
+        result = _aplicar_blur_progressivo(result, blur_kernel)
+    
+    if "rotacao" in filtros:
+        angle = rng.uniform(-rotacao_angle, rotacao_angle)
+        result = _aplicar_rotacao_suave(result, angle)
+    
+    if "onda" in filtros:
+        result = _aplicar_distorcao_onda(result, amplitude=onda_amplitude)
+    
+    if "brilho_contraste" in filtros:
+        result = _aplicar_brilho_contraste(result, brilho, contraste)
+    
+    if "saturacao" in filtros:
+        result = _aplicar_saturacao(result, saturacao)
+    
+    return result
+
+
 def memory_overflow_glitch(
     image_bgr: np.ndarray,
     intensity: int = 8,
     scale_decay: float = 0.82,
     jitter: int = 28,
+    filtros: Optional[Set[str]] = None,
     seed: Optional[int] = None,
 ) -> np.ndarray:
     """
     Simula efeito de estouro de memoria com triângulo invertido no eixo Y.
     
     Estrutura vertical:
-    - Base (fundo): Imagem original em alta definição
+    - Topo: Filtros distorcidos cada vez menores (mais efeitos)
     - Meio: Miniaturas coloridas reduzidas
-    - Topo: Filtros distorcidos cada vez menores
+    - Base: Imagem recortada (sem quadrado branco)
     
-    Criando um triângulo invertido com múltiplos efeitos:
-    - Mudanças de cor progressivas
-    - Distorção aumentando para o topo
-    - Diferentes intensidades de efeitos por camada
+    Parâmetros:
+    - filtros: set de strings com filtros a aplicar
+              {'blur', 'rotacao', 'onda', 'brilho_contraste', 'saturacao'}
     """
+    if filtros is None:
+        filtros = {"blur", "rotacao", "onda", "brilho_contraste", "saturacao"}
+    
     rng = np.random.default_rng(seed)
     intensity = max(2, int(intensity))
     scale_decay = float(np.clip(scale_decay, 0.55, 0.95))
     jitter = max(0, int(jitter))
 
     h, w = image_bgr.shape[:2]
-    canvas = image_bgr.astype(np.float32).copy()
+    
+    # Cria canvas com fundo transparente (sem branco)
+    canvas = np.zeros((h, w, 4), dtype=np.float32)
+    canvas[:, :, 3] = 0  # Alpha channel transparente
     base = image_bgr.copy()
 
-    # Layer 0: Imagem original em alta definição como base
-    base_processed = base.copy()
-    # Aplicar suave efeito de cor na base
-    hue_base = float(rng.integers(0, 180))
-    hue_target = float((hue_base + rng.integers(20, 60)) % 180)
-    base_colored, _ = shift_color(
-        base_processed,
-        source_hue=hue_base,
-        target_hue=hue_target,
-        tolerance=30,
-        feather=12,
-    )
-    base_saturated = _aplicar_saturacao(base_colored, rng.uniform(0.8, 1.2))
-    canvas = base_saturated.astype(np.float32)
+    # Layer 0: Recorta versão pequena da imagem original como base (sem deixar branco)
+    scale_base = 0.45
+    base_w = max(24, int(w * scale_base))
+    base_h = max(24, int(h * scale_base))
+    base_resized = cv2.resize(base, (base_w, base_h), interpolation=cv2.INTER_AREA)
+    
+    # Aplica efeitos suaves na base se selecionado
+    if base_resized.shape[0] > 0 and base_resized.shape[1] > 0:
+        base_colored = aplicar_filtros_selecionados(
+            base_resized,
+            filtros={"blur", "saturacao"},  # Apenas efeitos suaves na base
+            blur_kernel=3,
+            saturacao=rng.uniform(0.8, 1.2),
+            seed=seed,
+        )
+    else:
+        base_colored = base_resized
+
+    # Posiciona base no centro (recortada, sem quadrado branco)
+    y_offset = h - int(base_h * 0.6)
 
     # Cria camadas em triângulo invertido (menores acima)
-    y_offset = h - 40  # Começa próximo ao fundo
-    
     for i in range(1, intensity):
         scale = scale_decay ** i
         new_w = max(24, int(w * scale))
         new_h = max(24, int(h * scale))
+        
+        if new_w < 8 or new_h < 8:
+            break
+            
         resized = cv2.resize(base, (new_w, new_h), interpolation=cv2.INTER_AREA)
 
-        # Efeitos aumentam a cada camada (mais intensos para cima)
+        # Efeitos aumentam a cada camada
         effect_intensity = i / max(1, intensity - 1)
 
         # 1. Mudança de cor (mais radical nas camadas superiores)
@@ -194,27 +249,22 @@ def memory_overflow_glitch(
             feather=20,
         )
 
-        # 2. Blur: menos blur nas camadas de cima
-        blur_kernel = max(3, int(5 - i * 0.8))
-        if blur_kernel % 2 == 0:
-            blur_kernel += 1
-        blurred = _aplicar_blur_progressivo(recolored, blur_kernel)
-
-        # 3. Rotação cada vez mais intensa
-        angle = rng.uniform(-25 * effect_intensity, 25 * effect_intensity)
-        rotated = _aplicar_rotacao_suave(blurred, angle)
-
-        # 4. Distorção tipo onda: MUITO mais intensa nas camadas de cima
-        wave_amplitude = 3.0 + i * 4.5
-        distorted = _aplicar_distorcao_onda(rotated, amplitude=wave_amplitude)
-
-        # 5. Brilho, contraste e saturação extremos para cima
-        brightness = rng.uniform(-0.25 * effect_intensity, 0.30 * effect_intensity)
-        contrast = rng.uniform(0.5 + effect_intensity * 0.5, 1.5 + effect_intensity * 0.3)
-        saturation = rng.uniform(0.4 + effect_intensity * 0.5, 1.8)
+        # 2. Aplica filtros selecionados com parâmetros ajustados
+        blur_k = max(3, int(5 - i * 0.8))
+        if blur_k % 2 == 0:
+            blur_k += 1
         
-        adjusted = _aplicar_brilho_contraste(distorted, brightness, contrast)
-        adjusted = _aplicar_saturacao(adjusted, saturation)
+        filtered = aplicar_filtros_selecionados(
+            recolored,
+            filtros=filtros,
+            blur_kernel=blur_k,
+            rotacao_angle=25 * effect_intensity,
+            onda_amplitude=3.0 + i * 4.5,
+            brilho=rng.uniform(-0.25 * effect_intensity, 0.30 * effect_intensity),
+            contraste=rng.uniform(0.5 + effect_intensity * 0.5, 1.5 + effect_intensity * 0.3),
+            saturacao=rng.uniform(0.4 + effect_intensity * 0.5, 1.8),
+            seed=rng.integers(0, 2**31 - 1) if seed else None,
+        )
 
         # Posiciona verticalmente (eixo Y) - sobe conforme aumenta i
         cx = w // 2 + int(rng.integers(-jitter // 2, jitter // 2 + 1))
@@ -228,16 +278,43 @@ def memory_overflow_glitch(
         if y0 + new_h > h:
             y0 = max(0, h - new_h)
 
-        # Transparência aumenta conforme sobe (camadas de cima mais visíveis)
-        alpha = max(0.2, 0.85 - (intensity - i) * 0.08)
+        # Transparência aumenta conforme sobe
+        alpha = max(0.3, 0.85 - (intensity - i) * 0.08)
         
-        # Composição com blending
+        # Composição sem deixar brancas
         if y0 + new_h <= h and x0 + new_w <= w:
+            # Cria canal alpha para o filtro
+            filtered_rgba = cv2.cvtColor(filtered, cv2.COLOR_BGR2BGRA)
+            filtered_rgba[:, :, 3] = alpha * 255
+            
+            # Composição com blending adequado
             roi = canvas[y0 : y0 + new_h, x0 : x0 + new_w]
-            layer = adjusted.astype(np.float32)
-            canvas[y0 : y0 + new_h, x0 : x0 + new_w] = roi * (1.0 - alpha) + layer * alpha
+            layer_float = filtered.astype(np.float32)
+            
+            if roi[:, :, 3].max() > 0:
+                weight_bg = roi[:, :, 3] / 255.0
+                weight_fg = alpha * np.ones_like(weight_bg)
+                total_weight = weight_bg + weight_fg * (1 - weight_bg)
+                total_weight = np.clip(total_weight, 0.0001, 1.0)
+                
+                for c in range(3):
+                    canvas[y0 : y0 + new_h, x0 : x0 + new_w, c] = (
+                        roi[:, :, c] * weight_bg / total_weight +
+                        layer_float[:, :, 2 - c] * weight_fg * (1 - weight_bg) / total_weight
+                    )
+            else:
+                for c in range(3):
+                    canvas[y0 : y0 + new_h, x0 : x0 + new_w, c] = layer_float[:, :, 2 - c]
+            
+            canvas[y0 : y0 + new_h, x0 : x0 + new_w, 3] = np.clip(
+                canvas[y0 : y0 + new_h, x0 : x0 + new_w, 3] + alpha * 255, 0, 255
+            )
 
-    return np.clip(canvas, 0, 255).astype(np.uint8)
+    # Converte de volta para BGR sem contar áreas transparentes
+    # Usa apenas camadas compostas, sem fundo branco
+    result_rgb = canvas[:, :, :3].astype(np.uint8)
+    
+    return np.clip(result_rgb, 0, 255).astype(np.uint8)
 
 
 def detectar_hue_principal(h: np.ndarray, s: np.ndarray, v: np.ndarray) -> float:
@@ -331,5 +408,51 @@ def salvar_troca_cor(
     os.makedirs(pasta_saida, exist_ok=True)
     base = os.path.splitext(os.path.basename(caminho_entrada))[0]
     caminho_saida = os.path.join(pasta_saida, f"{base}_{sufixo}.png")
+    cv2.imwrite(caminho_saida, imagem_saida_bgr)
+    return caminho_saida
+
+
+def salvar_troca_cor_com_filtros(
+    caminho_entrada: str,
+    imagem_saida_bgr: np.ndarray,
+    pasta_saida: str,
+    filtros: Optional[Set[str]] = None,
+    sufixo: str = "troca_cor_com_filtros",
+    blur_kernel: int = 5,
+    rotacao_angle: float = 10.0,
+    onda_amplitude: float = 3.0,
+    brilho: float = 0.0,
+    contraste: float = 1.0,
+    saturacao: float = 1.0,
+) -> str:
+    """
+    Salva imagem de troca de cor com filtros selecionados aplicados.
+    
+    Parâmetros:
+    - filtros: set de strings {'blur', 'rotacao', 'onda', 'brilho_contraste', 'saturacao'}
+    - sufixo: sufixo do arquivo para diferenciar versões
+    """
+    os.makedirs(pasta_saida, exist_ok=True)
+    
+    # Aplica filtros selecionados
+    imagem_filtrada = aplicar_filtros_selecionados(
+        imagem_saida_bgr,
+        filtros=filtros,
+        blur_kernel=blur_kernel,
+        rotacao_angle=rotacao_angle,
+        onda_amplitude=onda_amplitude,
+        brilho=brilho,
+        contraste=contraste,
+        saturacao=saturacao,
+    )
+    
+    base = os.path.splitext(os.path.basename(caminho_entrada))[0]
+    
+    # Adiciona detalhes sobre filtros aplicados ao nome do arquivo
+    filtros_str = "_".join(sorted(filtros)) if filtros else "nenhum"
+    caminho_saida = os.path.join(pasta_saida, f"{base}_{sufixo}_{filtros_str}.png")
+    
+    cv2.imwrite(caminho_saida, imagem_filtrada)
+    return caminho_saida
     cv2.imwrite(caminho_saida, imagem_saida_bgr)
     return caminho_saida
