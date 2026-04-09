@@ -35,6 +35,7 @@ class AppThresholdGUI:
         self.root = root
         self.root.title("PDI - Thresholding Local (Tkinter)")
         self.root.geometry("1200x760")
+        self.base_dir = os.path.dirname(os.path.abspath(__file__))
 
         self.imagens: list[str] = []
         self.preview_images: list[ImageTk.PhotoImage] = []
@@ -82,6 +83,17 @@ class AppThresholdGUI:
         frame.pack(**pack_kwargs)
         button.configure(text=shown_text)
         return True
+
+    def _video_output_dir_padrao(self) -> str:
+        return os.path.normpath(os.path.join(self.base_dir, "..", "resultados", "video"))
+
+    def _resolver_video_output_dir(self) -> str:
+        pasta = self.var_video_output_dir.get().strip()
+        if not pasta:
+            return self._video_output_dir_padrao()
+        if os.path.isabs(pasta):
+            return os.path.normpath(pasta)
+        return os.path.normpath(os.path.join(self.base_dir, pasta))
 
     def _schedule_preview_cor_refresh(self, *_args: object) -> None:
         if self._preview_cor_after_id is not None:
@@ -202,7 +214,7 @@ class AppThresholdGUI:
             "isodata": tk.BooleanVar(value=True),
         }
         self.var_video_path = tk.StringVar(value="")
-        self.var_video_output_dir = tk.StringVar(value="../resultados/video")
+        self.var_video_output_dir = tk.StringVar(value=self._video_output_dir_padrao())
         self.var_video_preprocess = tk.BooleanVar(value=False)
         self.var_video_equalize = tk.BooleanVar(value=False)
         self.var_video_clahe = tk.BooleanVar(value=False)
@@ -531,7 +543,7 @@ class AppThresholdGUI:
         pasta = filedialog.askdirectory(title="Selecione pasta para salvar videos processados")
         if not pasta:
             return
-        self.var_video_output_dir.set(pasta)
+        self.var_video_output_dir.set(os.path.normpath(pasta))
 
     def _aplicar_metodo_video(self, frame_gray: np.ndarray, metodo: str, params: dict) -> np.ndarray:
         """Aplica um método de threshold específico ao frame."""
@@ -608,7 +620,7 @@ class AppThresholdGUI:
         altura = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
         # Criar pasta de saida
-        output_dir = self.var_video_output_dir.get().strip() or "../resultados/video"
+        output_dir = self._resolver_video_output_dir()
         os.makedirs(output_dir, exist_ok=True)
 
         # Writers para cada metodo
