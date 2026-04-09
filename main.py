@@ -95,6 +95,28 @@ class AppThresholdGUI:
             return os.path.normpath(pasta)
         return os.path.normpath(os.path.join(self.base_dir, pasta))
 
+    def _cor_output_dir_padrao(self) -> str:
+        return os.path.normpath(os.path.join(self.base_dir, "..", "resultados", "img_colorida"))
+
+    def _resolver_cor_output_dir(self) -> str:
+        pasta = self.var_cor_output_dir.get().strip()
+        if not pasta:
+            return self._cor_output_dir_padrao()
+        if os.path.isabs(pasta):
+            return os.path.normpath(pasta)
+        return os.path.normpath(os.path.join(self.base_dir, pasta))
+
+    def _resultados_output_dir_padrao(self) -> str:
+        return os.path.normpath(os.path.join(self.base_dir, "..", "resultados"))
+
+    def _resolver_resultados_output_dir(self) -> str:
+        pasta = self.var_figure_dir.get().strip()
+        if not pasta:
+            return self._resultados_output_dir_padrao()
+        if os.path.isabs(pasta):
+            return os.path.normpath(pasta)
+        return os.path.normpath(os.path.join(self.base_dir, pasta))
+
     def _schedule_preview_cor_refresh(self, *_args: object) -> None:
         if self._preview_cor_after_id is not None:
             self.root.after_cancel(self._preview_cor_after_id)
@@ -181,7 +203,7 @@ class AppThresholdGUI:
         self.var_adaptive_polarity = tk.StringVar(value="above")
         self.var_multi_mode = tk.StringVar(value="levels")
         self.var_stat_polarity = tk.StringVar(value="above")
-        self.var_figure_dir = tk.StringVar(value="resultados")
+        self.var_figure_dir = tk.StringVar(value=self._resultados_output_dir_padrao())
         self.var_filtros_visiveis = tk.BooleanVar(value=False)
 
         self.method_vars: dict[str, tk.BooleanVar] = {
@@ -803,7 +825,7 @@ class AppThresholdGUI:
         ttk.Button(topo, text="Aplicar troca de cor", command=self.aplicar_troca_cor_principal).pack(side="left", padx=8)
         ttk.Button(topo, text="Aplicar Memory Overflow", command=self.aplicar_memory_overflow).pack(side="left", padx=8)
 
-        self.var_cor_output_dir = tk.StringVar(value="../resultados/img_colorida")
+        self.var_cor_output_dir = tk.StringVar(value=self._cor_output_dir_padrao())
         self.var_cor_origem = tk.StringVar(value="auto")
         self.var_cor_destino = tk.StringVar(value="verde")
         self.var_cor_tolerancia = tk.IntVar(value=18)
@@ -1047,7 +1069,7 @@ class AppThresholdGUI:
         pasta = filedialog.askdirectory(title="Selecione pasta de saida para troca de cor")
         if not pasta:
             return
-        self.var_cor_output_dir.set(pasta)
+        self.var_cor_output_dir.set(os.path.normpath(pasta))
         self.status_cor.set(f"Pasta de saida (troca de cor): {pasta}")
 
     def selecionar_cor_rgb_destino(self) -> None:
@@ -1104,7 +1126,7 @@ class AppThresholdGUI:
         return saida_bgr, meta
 
     def _salvar_preview_atual(self, saida_bgr: np.ndarray, sufixo: str) -> str:
-        dir_saida = self.var_cor_output_dir.get().strip() or "../resultados/img_colorida"
+        dir_saida = self._resolver_cor_output_dir()
         return salvar_troca_cor(
             self.caminho_cor,
             saida_bgr,
@@ -1117,28 +1139,32 @@ class AppThresholdGUI:
             messagebox.showwarning("Aviso", "Selecione uma imagem na aba Troca de Cor.")
             return
 
-        self._refresh_preview_cor_now()
+        try:
+            self._refresh_preview_cor_now()
 
-        if self._ultima_preview_cor_bgr is None:
-            messagebox.showerror("Erro", "Nao foi possivel salvar a imagem atual.")
-            return
+            if self._ultima_preview_cor_bgr is None:
+                messagebox.showerror("Erro", "Nao foi possivel salvar a imagem atual.")
+                return
 
-        if self.modo_preview_cor == "overflow":
-            filtros_selecionados = {nome for nome, var in self.filtros_overflow_vars.items() if var.get()}
-            filtros_str = "_".join(sorted(filtros_selecionados)) if filtros_selecionados else "default"
-            caminho_saida = self._salvar_preview_atual(
-                self._ultima_preview_cor_bgr,
-                sufixo=f"preview_memory_overflow_i{int(self.var_overflow_intensidade.get())}_f{filtros_str}",
-            )
-        else:
-            filtros_selecionados = {nome for nome, var in self.filtros_cor_vars.items() if var.get()}
-            filtros_str = "_".join(sorted(filtros_selecionados)) if filtros_selecionados else "sem_filtros"
-            caminho_saida = self._salvar_preview_atual(
-                self._ultima_preview_cor_bgr,
-                sufixo=f"preview_troca_cor_{filtros_str}",
-            )
+            if self.modo_preview_cor == "overflow":
+                filtros_selecionados = {nome for nome, var in self.filtros_overflow_vars.items() if var.get()}
+                filtros_str = "_".join(sorted(filtros_selecionados)) if filtros_selecionados else "default"
+                caminho_saida = self._salvar_preview_atual(
+                    self._ultima_preview_cor_bgr,
+                    sufixo=f"preview_memory_overflow_i{int(self.var_overflow_intensidade.get())}_f{filtros_str}",
+                )
+            else:
+                filtros_selecionados = {nome for nome, var in self.filtros_cor_vars.items() if var.get()}
+                filtros_str = "_".join(sorted(filtros_selecionados)) if filtros_selecionados else "sem_filtros"
+                caminho_saida = self._salvar_preview_atual(
+                    self._ultima_preview_cor_bgr,
+                    sufixo=f"preview_troca_cor_{filtros_str}",
+                )
 
-        self.status_cor.set(f"Imagem salva em: {caminho_saida}")
+            self.status_cor.set(f"Imagem salva em: {caminho_saida}")
+        except Exception as exc:
+            messagebox.showerror("Erro ao salvar", str(exc))
+            self.status_cor.set("Falha ao salvar a imagem.")
 
     def _atualizar_preview_cor(self) -> None:
         if not self.caminho_cor:
@@ -1186,7 +1212,7 @@ class AppThresholdGUI:
         try:
             self.modo_preview_cor = "troca"
             saida_bgr, meta = self._aplicar_filtro_cor_em_bgr(bgr)
-            dir_saida = self.var_cor_output_dir.get().strip() or "../resultados/img_colorida"
+            dir_saida = self._resolver_cor_output_dir()
             
             # Coleta filtros selecionados
             filtros_selecionados = {nome for nome, var in self.filtros_cor_vars.items() if var.get()}
@@ -1229,7 +1255,7 @@ class AppThresholdGUI:
                 filtros=filtros_selecionados if filtros_selecionados else None,
                 intensidades=intensidades if intensidades else None,
             )
-            dir_saida = self.var_cor_output_dir.get().strip() or "../resultados/img_colorida"
+            dir_saida = self._resolver_cor_output_dir()
             
             # Nome dos filtros aplicados
             filtros_str = "_".join(sorted(filtros_selecionados)) if filtros_selecionados else "default"
@@ -1342,7 +1368,7 @@ class AppThresholdGUI:
                 "multi_mode": self.var_multi_mode.get(),
                 "stat_polarity": self.var_stat_polarity.get(),
                 "range_invert": self.var_range_invert.get(),
-                "figure_dir": self.var_figure_dir.get().strip() or "resultados",
+                "figure_dir": self._resolver_resultados_output_dir(),
                 "block_size": int(self.entries["block_size"].get()),
                 "offset": float(self.entries["offset"].get()),
                 "classes": int(self.entries["classes"].get()),
@@ -1414,7 +1440,7 @@ class AppThresholdGUI:
         pasta = filedialog.askdirectory(title="Selecione pasta de saida")
         if not pasta:
             return
-        self.var_figure_dir.set(pasta)
+        self.var_figure_dir.set(os.path.normpath(pasta))
         self.status.set(f"Pasta de saida definida: {pasta}")
 
     def _processar_arquivo(self, caminho_imagem: str, params: dict) -> None:

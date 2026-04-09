@@ -499,7 +499,8 @@ def salvar_troca_cor(
     os.makedirs(pasta_saida, exist_ok=True)
     base = os.path.splitext(os.path.basename(caminho_entrada))[0]
     caminho_saida = os.path.join(pasta_saida, f"{base}_{sufixo}.png")
-    cv2.imwrite(caminho_saida, imagem_saida_bgr)
+    if not cv2.imwrite(caminho_saida, imagem_saida_bgr):
+        raise IOError(f"Nao foi possivel salvar a imagem em: {caminho_saida}")
     return caminho_saida
 
 
@@ -543,7 +544,6 @@ def salvar_troca_cor_com_filtros(
     filtros_str = "_".join(sorted(filtros)) if filtros else "nenhum"
     caminho_saida = os.path.join(pasta_saida, f"{base}_{sufixo}_{filtros_str}.png")
     
-    cv2.imwrite(caminho_saida, imagem_filtrada)
-    return caminho_saida
-    cv2.imwrite(caminho_saida, imagem_saida_bgr)
+    if not cv2.imwrite(caminho_saida, imagem_filtrada):
+        raise IOError(f"Nao foi possivel salvar a imagem em: {caminho_saida}")
     return caminho_saida
