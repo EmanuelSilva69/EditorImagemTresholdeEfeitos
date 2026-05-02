@@ -28,6 +28,7 @@ from processamento_thresholds import (
 )
 from filtros_cor import COR_PARA_HUE, aplicar_filtros_selecionados, memory_overflow_glitch, salvar_troca_cor
 from filtros_cor import detectar_hue_principal, shift_color
+from processamento_avancado import AdvancedVisionProcessor
 
 
 class AppThresholdGUI:
@@ -44,6 +45,7 @@ class AppThresholdGUI:
         self.modo_preview_cor: str = "troca"
         self._preview_cor_after_id = None
         self._ultima_preview_cor_bgr: np.ndarray | None = None
+        self.advanced_processor = AdvancedVisionProcessor()
 
         self._build_ui()
 
@@ -117,6 +119,17 @@ class AppThresholdGUI:
             return os.path.normpath(pasta)
         return os.path.normpath(os.path.join(self.base_dir, pasta))
 
+    def _advanced_output_dir_padrao(self) -> str:
+        return os.path.normpath(os.path.join(self.base_dir, "..", "resultados", "avancado"))
+
+    def _resolver_advanced_output_dir(self) -> str:
+        pasta = self.var_adv_output_dir.get().strip()
+        if not pasta:
+            return self._advanced_output_dir_padrao()
+        if os.path.isabs(pasta):
+            return os.path.normpath(pasta)
+        return os.path.normpath(os.path.join(self.base_dir, pasta))
+
     def _schedule_preview_cor_refresh(self, *_args: object) -> None:
         if self._preview_cor_after_id is not None:
             self.root.after_cancel(self._preview_cor_after_id)
@@ -133,9 +146,11 @@ class AppThresholdGUI:
         self.tab_threshold = ttk.Frame(self.tabs)
         self.tab_cor = ttk.Frame(self.tabs)
         self.tab_video = ttk.Frame(self.tabs)
+        self.tab_avancado = ttk.Frame(self.tabs)
         self.tabs.add(self.tab_threshold, text="Threshold")
         self.tabs.add(self.tab_cor, text="Troca de Cor")
         self.tabs.add(self.tab_video, text="Video")
+        self.tabs.add(self.tab_avancado, text="Avancado")
 
         self.threshold_shell = self._create_scrollable_tab(self.tab_threshold)
         self.threshold_shell.pack(fill="both", expand=True)
@@ -148,6 +163,10 @@ class AppThresholdGUI:
         self.video_shell = self._create_scrollable_tab(self.tab_video)
         self.video_shell.pack(fill="both", expand=True)
         self.video_content = self.video_shell.content  # type: ignore[attr-defined]
+
+        self.advanced_shell = self._create_scrollable_tab(self.tab_avancado)
+        self.advanced_shell.pack(fill="both", expand=True)
+        self.advanced_content = self.advanced_shell.content  # type: ignore[attr-defined]
 
         frame_top = ttk.Frame(self.threshold_content, padding=10)
         frame_top.pack(fill="x")
@@ -404,6 +423,7 @@ class AppThresholdGUI:
 
         self._build_color_tab()
         self._build_video_tab()
+        self._build_avancado_tab()
 
     def _build_video_tab(self) -> None:
         topo = ttk.Frame(self.video_content, padding=10)
@@ -550,6 +570,214 @@ class AppThresholdGUI:
 
         self.status_video = tk.StringVar(value="Selecione um video para iniciar.")
         ttk.Label(self.video_content, textvariable=self.status_video, relief="sunken", anchor="w").pack(fill="x", side="bottom", ipady=4)
+
+    def _build_avancado_tab(self) -> None:
+        topo = ttk.Frame(self.advanced_content, padding=10)
+        topo.pack(fill="x")
+
+        ttk.Button(topo, text="Selecionar imagem", command=self.selecionar_entrada_avancada_imagem).pack(side="left")
+        ttk.Button(topo, text="Selecionar video", command=self.selecionar_entrada_avancada_video).pack(side="left", padx=8)
+        ttk.Button(topo, text="Selecionar referencia", command=self.selecionar_referencia_avancada).pack(side="left", padx=8)
+        ttk.Button(topo, text="Selecionar saida", command=self.selecionar_saida_avancada).pack(side="left", padx=8)
+
+        params = ttk.LabelFrame(self.advanced_content, text="Processamento Avancado", padding=10)
+        params.pack(fill="x", padx=10, pady=(0, 10))
+
+        self.var_adv_image_path = tk.StringVar(value="")
+        self.var_adv_video_path = tk.StringVar(value="")
+        self.var_adv_reference_path = tk.StringVar(value="")
+        self.var_adv_output_dir = tk.StringVar(value=self._advanced_output_dir_padrao())
+        self.var_adv_mode = tk.StringVar(value="hsv")
+        self.var_adv_preview = tk.BooleanVar(value=True)
+        self.var_adv_status_backend = tk.StringVar(value=f"Backend detectado: {self.advanced_processor.backend.upper()}")
+
+        l1 = ttk.Frame(params)
+        l1.pack(fill="x", pady=2)
+        ttk.Label(l1, text="Imagem: ").pack(side="left")
+        ttk.Entry(l1, textvariable=self.var_adv_image_path, width=92).pack(side="left", padx=5, fill="x", expand=True)
+
+        l2 = ttk.Frame(params)
+        l2.pack(fill="x", pady=2)
+        ttk.Label(l2, text="Video: ").pack(side="left")
+        ttk.Entry(l2, textvariable=self.var_adv_video_path, width=92).pack(side="left", padx=5, fill="x", expand=True)
+
+        l3 = ttk.Frame(params)
+        l3.pack(fill="x", pady=2)
+        ttk.Label(l3, text="Referencia: ").pack(side="left")
+        ttk.Entry(l3, textvariable=self.var_adv_reference_path, width=92).pack(side="left", padx=5, fill="x", expand=True)
+
+        l4 = ttk.Frame(params)
+        l4.pack(fill="x", pady=2)
+        ttk.Label(l4, text="Saida: ").pack(side="left")
+        ttk.Entry(l4, textvariable=self.var_adv_output_dir, width=92).pack(side="left", padx=5, fill="x", expand=True)
+        ttk.Label(l4, textvariable=self.var_adv_status_backend).pack(side="left", padx=10)
+
+        l5 = ttk.Frame(params)
+        l5.pack(fill="x", pady=2)
+        ttk.Label(l5, text="Modo: ").pack(side="left")
+        ttk.Combobox(l5, textvariable=self.var_adv_mode, values=["hsv", "matching"], state="readonly", width=12).pack(side="left", padx=5)
+        ttk.Checkbutton(l5, text="Preview com cv2.imshow", variable=self.var_adv_preview).pack(side="left", padx=16)
+
+        acao = ttk.Frame(self.advanced_content, padding=10)
+        acao.pack(fill="x")
+        ttk.Button(acao, text="Visualizar imagem", command=self.visualizar_imagem_avancada).pack(side="left")
+        ttk.Button(acao, text="Salvar imagem processada", command=self.salvar_imagem_avancada).pack(side="left", padx=8)
+        ttk.Button(acao, text="Processar video", command=self.processar_video_avancado).pack(side="left", padx=8)
+
+        self.status_avancado = tk.StringVar(value="Selecione uma imagem ou video e uma referencia para matching.")
+        ttk.Label(self.advanced_content, textvariable=self.status_avancado, relief="sunken", anchor="w").pack(fill="x", side="bottom", ipady=4)
+
+    def _carregar_imagem_bgr(self, caminho: str) -> np.ndarray:
+        if not caminho or not os.path.exists(caminho):
+            raise FileNotFoundError("Arquivo de imagem nao encontrado.")
+        imagem = cv2.imread(caminho, cv2.IMREAD_COLOR)
+        if imagem is None:
+            raise ValueError(f"Falha ao abrir a imagem: {caminho}")
+        return imagem
+
+    def selecionar_entrada_avancada_imagem(self) -> None:
+        caminho = filedialog.askopenfilename(
+            title="Selecione imagem de entrada",
+            filetypes=[("Imagens", "*.png;*.jpg;*.jpeg;*.bmp;*.tif;*.tiff"), ("Todos os arquivos", "*.*")],
+        )
+        if not caminho:
+            return
+        self.var_adv_image_path.set(caminho)
+        self.status_avancado.set(f"Imagem selecionada: {os.path.basename(caminho)}")
+
+    def selecionar_entrada_avancada_video(self) -> None:
+        caminho = filedialog.askopenfilename(
+            title="Selecione video de entrada",
+            filetypes=[("Videos", "*.mp4;*.avi;*.mov;*.mkv"), ("Todos os arquivos", "*.*")],
+        )
+        if not caminho:
+            return
+        self.var_adv_video_path.set(caminho)
+        self.status_avancado.set(f"Video selecionado: {os.path.basename(caminho)}")
+
+    def selecionar_referencia_avancada(self) -> None:
+        caminho = filedialog.askopenfilename(
+            title="Selecione imagem de referencia",
+            filetypes=[("Imagens", "*.png;*.jpg;*.jpeg;*.bmp;*.tif;*.tiff"), ("Todos os arquivos", "*.*")],
+        )
+        if not caminho:
+            return
+        self.var_adv_reference_path.set(caminho)
+        self.status_avancado.set(f"Referencia selecionada: {os.path.basename(caminho)}")
+
+    def selecionar_saida_avancada(self) -> None:
+        pasta = filedialog.askdirectory(title="Selecione pasta de saida avancada")
+        if not pasta:
+            return
+        self.var_adv_output_dir.set(os.path.normpath(pasta))
+        self.status_avancado.set(f"Pasta de saida avancada: {pasta}")
+
+    def _processar_imagem_avancada(self) -> tuple[np.ndarray, float, str]:
+        caminho = self.var_adv_image_path.get().strip()
+        if not caminho:
+            raise ValueError("Selecione uma imagem de entrada na aba Avancado.")
+
+        source_bgr = self._carregar_imagem_bgr(caminho)
+        mode = self.var_adv_mode.get().strip().lower()
+        reference_bgr = None
+        if mode == "matching":
+            ref_path = self.var_adv_reference_path.get().strip()
+            if not ref_path:
+                raise ValueError("Selecione uma imagem de referencia para Histogram Matching.")
+            reference_bgr = self._carregar_imagem_bgr(ref_path)
+
+        resultado = self.advanced_processor.process_image(source_bgr, reference_bgr, mode)
+        return resultado.imagem_bgr, float(resultado.ssim_value or 0.0), resultado.modo
+
+    def visualizar_imagem_avancada(self) -> None:
+        try:
+            modo = self.var_adv_mode.get().strip().lower()
+            while True:
+                imagem_bgr, ssim_value, modo_resolvido = self._processar_imagem_avancada()
+                exibicao = imagem_bgr.copy()
+                overlay = f"Modo: {modo_resolvido} | Backend: {self.advanced_processor.backend.upper()} | SSIM: {ssim_value:.4f}"
+                cv2.rectangle(exibicao, (8, 8), (980, 52), (0, 0, 0), -1)
+                cv2.putText(exibicao, overlay, (18, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
+                cv2.imshow("Processamento Avancado", exibicao)
+                tecla = cv2.waitKey(0) & 0xFF
+                if tecla == ord("q"):
+                    break
+                if tecla == ord("h"):
+                    self.var_adv_mode.set("hsv")
+                    modo = "hsv"
+                    continue
+                if tecla == ord("m"):
+                    self.var_adv_mode.set("matching")
+                    modo = "matching"
+                    continue
+                if tecla in (13, 27):
+                    break
+                break
+            cv2.destroyAllWindows()
+            self.status_avancado.set(f"Visualizacao concluida no modo {modo.upper()}.")
+        except Exception as exc:
+            cv2.destroyAllWindows()
+            messagebox.showerror("Erro", str(exc))
+            self.status_avancado.set("Falha ao visualizar a imagem avancada.")
+
+    def salvar_imagem_avancada(self) -> None:
+        try:
+            imagem_bgr, ssim_value, modo = self._processar_imagem_avancada()
+            output_dir = self._resolver_advanced_output_dir()
+            os.makedirs(output_dir, exist_ok=True)
+
+            source_path = self.var_adv_image_path.get().strip()
+            base = os.path.splitext(os.path.basename(source_path))[0]
+            output_path = os.path.join(output_dir, f"{base}_{modo.lower()}.png")
+            if not cv2.imwrite(output_path, imagem_bgr):
+                raise IOError(f"Nao foi possivel salvar a imagem em: {output_path}")
+
+            self.status_avancado.set(f"Imagem salva em {output_path} | SSIM={ssim_value:.4f}")
+            messagebox.showinfo("Sucesso", f"Imagem salva em:\n{output_path}\n\nSSIM médio: {ssim_value:.4f}")
+        except Exception as exc:
+            messagebox.showerror("Erro", str(exc))
+            self.status_avancado.set("Falha ao salvar a imagem avancada.")
+
+    def processar_video_avancado(self) -> None:
+        try:
+            video_path = self.var_adv_video_path.get().strip()
+            if not video_path:
+                raise ValueError("Selecione um video de entrada na aba Avancado.")
+
+            mode = self.var_adv_mode.get().strip().lower()
+            reference_path = self.var_adv_reference_path.get().strip() or None
+            if mode == "matching" and not reference_path:
+                raise ValueError("Selecione uma imagem de referencia para Histogram Matching.")
+
+            output_dir = self._resolver_advanced_output_dir()
+            os.makedirs(output_dir, exist_ok=True)
+            base = os.path.splitext(os.path.basename(video_path))[0]
+            output_path = os.path.join(output_dir, f"{base}_{mode}.mp4")
+
+            self.status_avancado.set(f"Processando video avancado em modo {mode.upper()}...")
+            resultado = self.advanced_processor.process_video(
+                source_video_path=video_path,
+                output_video_path=output_path,
+                reference_path=reference_path,
+                preview=self.var_adv_preview.get(),
+                initial_mode=mode,
+            )
+
+            ssim_media = resultado.get("ssim_mean")
+            backend = resultado.get("backend", self.advanced_processor.backend)
+            if ssim_media is None:
+                self.status_avancado.set(f"Video salvo em {output_path} | Backend: {backend}")
+            else:
+                self.status_avancado.set(f"Video salvo em {output_path} | Backend: {backend} | SSIM medio: {ssim_media:.4f}")
+
+            mensagem = f"Video salvo em:\n{output_path}\n\nBackend: {backend}"
+            if ssim_media is not None:
+                mensagem += f"\nSSIM medio: {ssim_media:.4f}"
+            messagebox.showinfo("Sucesso", mensagem)
+        except Exception as exc:
+            cv2.destroyAllWindows()
+            messagebox.showerror("Erro", str(exc))
+            self.status_avancado.set("Falha ao processar o video avancado.")
 
     def selecionar_video(self) -> None:
         caminho = filedialog.askopenfilename(
@@ -1680,7 +1908,7 @@ class AppThresholdGUI:
             self.status.set("Erro durante processamento em lote.")
 
 
-def main() -> None:
+def run_threshold_app() -> None:
     root = tk.Tk()
     style = ttk.Style(root)
     if "clam" in style.theme_names():
@@ -1688,6 +1916,14 @@ def main() -> None:
     app = AppThresholdGUI(root)
     _ = app
     root.mainloop()
+
+
+def main() -> None:
+    from color_app import run_color_app
+    from creative_filters_app import run_creative_filters_app
+    from launcher_app import run_launcher_app
+
+    run_launcher_app(run_threshold_app, run_color_app, run_creative_filters_app)
 
 
 if __name__ == "__main__":

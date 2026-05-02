@@ -219,6 +219,89 @@ Este documento explica, funcao por funcao, o que cada parte do projeto faz, como
   - Botao para mostrar/ocultar filtros extras.
   - Processamento de imagem selecionada ou em lote.
 
+  ### run_threshold_app() e main()
+
+  - Objetivo: servir como ponto de entrada do app original de thresholding.
+  - Fluxo:
+    - `run_threshold_app()` cria a janela principal do ATV1.
+    - `main()` mostra um menu inicial no console para escolher entre ATV1, T2 ou sair.
+  - Expansibilidade:
+    - O menu foi estruturado para aceitar novos módulos sem quebrar os existentes.
+
+  ## color_app.py (T2)
+
+  ### run_color_app()
+
+  - Objetivo: abrir a interface exclusiva do módulo T2 de mudança de cores e histogram matching.
+  - Funções centrais:
+    - Conversão RGB->HSV com fallback CPU/GPU.
+    - Histogram matching com referência.
+    - Cálculo de SSIM para avaliar similaridade.
+    - Processamento de vídeo com preview e atalhos `h`, `m` e `q`.
+
+  ## processamento_avancado.py
+
+  ### Classe AdvancedVisionProcessor
+
+  - Objetivo: centralizar processamento avançado com deteccao automatica de GPU, conversao RGB->HSV, histogram matching e calculo de SSIM.
+  - Deteccao de hardware:
+    - O backend verifica suporte a CUDA por meio de `cv2.cuda.getDeviceCount()` quando disponivel.
+    - Se houver GPU habilitada, a conversao de cor usa `cv2.cuda.cvtColor`.
+    - Caso contrario, o fluxo cai automaticamente para OpenCV em CPU.
+
+  ### Espaço HSV
+
+  - O modelo HSV representa a cor em coordenadas quase cilíndricas: Matiz (H), Saturação (S) e Valor (V).
+  - O canal H descreve o tipo de cor, S controla a pureza da cor e V representa a luminância.
+  - Essa separação e mais util que RGB em segmentacao porque isola a informacao cromatica da iluminacao.
+  - Na pratica, isso reduz a sensibilidade a sombras e variações de brilho, o que facilita limiarizacao e analise de cor.
+
+  ### Conversao RGB para HSV
+
+  - Objetivo: transformar a imagem para o espaço HSV mantendo a compatibilidade com imagem e video.
+  - Implementacao:
+    - Em GPU, a conversao ocorre com `cv2.cuda.cvtColor`.
+    - Em CPU, o processamento usa `cv2.cvtColor` normal.
+  - Uso no app:
+    - A aba Avancado permite visualizar o resultado com atalhos `h` e `m` em janelas `cv2.imshow`.
+
+  ### Histogram Matching
+
+  - Objetivo: ajustar a distribuicao tonal de uma imagem para aproximá-la da distribuicao de uma referencia.
+  - Base matematica:
+    - Calcula-se a Função de Distribuição Acumulada (CDF) do histograma da imagem fonte.
+    - Calcula-se a CDF da imagem de referencia.
+    - Busca-se uma transformação T tal que a CDF da imagem fonte se aproxime da CDF da referencia.
+  - Interpretacao:
+    - O processo transfere contraste e aparência tonal entre imagens.
+    - Em HSV, costuma ser interessante aplicar o matching de forma controlada, pois o canal V afeta brilho sem destruir a cromaticidade.
+
+  ### SSIM
+
+  - Objetivo: medir a similaridade estrutural entre a imagem original e a processada.
+  - Fundamentacao:
+    - O SSIM compara tres componentes: luminância, contraste e estrutura.
+    - Diferente do MSE, que mede erro pixel a pixel, o SSIM aproxima melhor a percepção visual humana.
+    - O valor varia de -1 a 1, sendo 1 uma correspondencia perfeita.
+  - Uso no projeto:
+    - O SSIM e calculado para cada imagem ou frame processado, permitindo avaliar o impacto visual de HSV e histogram matching.
+
+  ### Aceleracao por GPU
+
+  - Objetivo: reduzir tempo de processamento em imagens e frames de video.
+  - Fundamentação tecnica:
+    - Operacoes de imagem são altamente paralelizáveis porque cada pixel ou bloco de pixels pode ser processado simultaneamente.
+    - GPUs executam milhares de threads em paralelo, o que acelera conversoes de cor e etapas matriciais.
+    - Quando CUDA não está disponível, o app usa fallback em CPU para manter compatibilidade.
+
+  ### Funcoes principais
+
+  - `rgb_to_hsv(image_rgb)`: converte RGB para HSV com GPU ou CPU.
+  - `histogram_match_bgr(source_bgr, reference_bgr)`: aplica matching entre imagem fonte e referencia.
+  - `compute_ssim_bgr(original_bgr, processed_bgr)`: calcula SSIM entre a original e a processada.
+  - `process_image(source_bgr, reference_bgr, mode)`: executa o processamento de imagem na aba Avancado.
+  - `process_video(source_video_path, output_video_path, reference_path, preview, initial_mode)`: processa video com preview em `cv2.imshow` e atalhos `h`, `m` e `q`.
+
 ### _build_ui()
 
 - Objetivo: montar todos os componentes da janela.
